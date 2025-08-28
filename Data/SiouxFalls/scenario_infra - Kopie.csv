@@ -1,0 +1,5 @@
+scenario;left-stop;right-stop;infrastructure_capacity
+2;11;10;0
+2;10;11;0
+3;8;16;0
+3;16;8;0
