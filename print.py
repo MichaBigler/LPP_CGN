@@ -39,11 +39,9 @@ def print_domain_summary(domain: DomainData, max_rows: int = 5, max_lines: int =
         print(f"  group={ld.group} dir={ld.direction:+d} stops={preview}")
 
     # Include sets
-    print(f"\nInclude sets: {len(domain.include_sets)}")
-    for o, S in _head(domain.include_sets, max_include):
-        S_sorted = sorted(S)
-        preview = S_sorted[:10] + (["…"] if len(S_sorted) > 10 else [])
-        print(f"  origin {o}: {preview}")
+    print(f"\nInclude nodes (from num_include={domain.config.get('num_include')}): {len(next(iter(domain.include_sets.values()), set()))}")
+    inc_preview = sorted(next(iter(domain.include_sets.values()), set()))[:20]
+    print(f"  nodes: {inc_preview}{' …' if len(inc_preview)==20 else ''}")
 
     # Scenario probabilities
     print(f"\nScenario probs (rows={len(domain.scen_prob_df)}):")
@@ -117,8 +115,18 @@ def print_model_summary(model: ModelData, domain: DomainData, max_items: int = 5
               f"in[min,avg,max]=({deg_in.min()},{deg_in.mean():.2f},{deg_in.max()})")
 
     # Incidence matrices
-    dens_eL = model.A_edge_line.nnz / (model.A_edge_line.shape[0] * model.A_edge_line.shape[1]) if model.A_edge_line.shape[1] else 0
-    dens_nL = model.A_node_line.nnz / (model.A_node_line.shape[0] * model.A_node_line.shape[1]) if model.A_node_line.shape[1] else 0
+    def _density(mat) -> float:
+        """Safe density for scipy CSR/COO/CSC; returns 0.0 for empty or missing shape."""
+        shp = getattr(mat, "shape", None)
+        if not shp:
+            return 0.0
+        rows, cols = shp
+        if rows == 0 or cols == 0:
+            return 0.0
+        return float(mat.nnz) / float(rows * cols)
+
+    dens_eL = _density(model.A_edge_line)
+    dens_nL = _density(model.A_node_line)
     print(f"\nA_edge_line: shape={model.A_edge_line.shape}, nnz={model.A_edge_line.nnz}, density={dens_eL:.4f}")
     print(f"A_node_line: shape={model.A_node_line.shape}, nnz={model.A_node_line.nnz}, density={dens_nL:.4f}")
 

@@ -24,7 +24,7 @@ def main():
         print_model_summary(model, domain, max_items=5, max_lines=5)
 
         results.append({
-            "row": int(i),
+            "row": str(i),
             "tag": f"{row['source']}/{row['network']}@{row['scenario_line_data']}",
             "N": model.N, "E_dir": model.E_dir, "L": model.L, "S": model.S
         })

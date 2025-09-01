@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 from scipy.sparse import csr_matrix
 from data_model import LineDef, DomainData, ModelData  
+from typing import Any, cast
 
 def load_and_build(data_root: str, cfg_row: dict, *, symmetrise_infra: bool=False, zero_od_diagonal: bool=False) -> Tuple[DomainData, ModelData]:
     """Resolve strict nested paths from cfg_row (expects keys: source, network, scenario_line_data) and build structures."""
@@ -31,7 +32,8 @@ def load_and_build(data_root: str, cfg_row: dict, *, symmetrise_infra: bool=Fals
     # ---------- parse the three path parameters ----------
     src, net, scen = str(cfg_row[key(cfg_row,'source')]), str(cfg_row[key(cfg_row,'network')]), str(cfg_row[key(cfg_row,'scenario_line_data')])
     net_dir  = os.path.join(data_root, src, net)
-    scen_dir = os.path.join(data_root, "Data", scen)
+    scen_dir = os.path.join(data_root, "Data", scen)  # <- dein aktueller Pfad
+    num_include = int(cfg_row.get('num_include', 0))  # <- NEW: target include size
 
     # ---------- parsers (scoped) ----------
     def read_stops(p: str) -> pd.DataFrame:
@@ -44,32 +46,60 @@ def load_and_build(data_root: str, cfg_row: dict, *, symmetrise_infra: bool=Fals
         return pd.read_csv(must(p), sep=';', comment='#', header=None, names=['i','j','demand']).astype({'i':int,'j':int,'demand':float})
 
     def read_lines(p: str) -> List[LineDef]:
+        """Read candidate lines; each group has one (+1) or two (+1/-1) directions."""
         raw = pd.read_csv(must(p), sep=';')
-        raw = raw[raw['property'].str.lower()=='line']
+        raw = raw[raw['property'].str.lower() == 'line']
+
+        def parse_stop_seq(val: Any) -> List[int]:
+            # parse "1, 2,3" -> [1,2,3]
+            parts = [s.strip() for s in str(val).split(',') if s and s.strip() != '']
+            return [int(s) for s in parts]
+
         out: List[LineDef] = []
-        for g, grp in raw.groupby('line_group', sort=True):
+        for g_obj, grp in raw.groupby('line_group', sort=True):
+            # Pylance fix: g_obj is pandas "Scalar"; cast to Any before int()
+            group_id: int = int(cast(Any, g_obj))
+
             rows = grp.sort_index()
-            seqs = [[int(x) for x in str(rows.iloc[k]['value_1']).split(',') if str(x).strip()!=''] for k in range(len(rows))]
-            if len(seqs)==1: out.append(LineDef(int(g), +1, seqs[0]))
-            else: out += [LineDef(int(g), +1, seqs[0]), LineDef(int(g), -1, seqs[1])]
+            seqs: List[List[int]] = [parse_stop_seq(rows.iloc[k]['value_1']) for k in range(len(rows))]
+
+            if len(seqs) == 1:
+                out.append(LineDef(group_id, +1, seqs[0]))
+            else:
+                out.append(LineDef(group_id, +1, seqs[0]))
+                out.append(LineDef(group_id, -1, seqs[1]))
         return out
 
-    def read_include_list(p: str) -> Dict[int, Set[int]]:
+    def read_include_nodes(p: str, target_num_include: int) -> Set[int]:
+        """Pick the row with 'num_include' == target, return set of included node IDs (columns 1..N with nonzero)."""
         df = pd.read_csv(must(p), sep=';')
-        stop_cols = [c for c in df.columns if c!='num_include']
-        include = {}
-        for r, row in df.iterrows():
-            allowed = set()
-            for c in stop_cols:
-                try: j = int(c)
-                except: continue
-                v = row[c]
-                if pd.notna(v) and str(v).strip() not in ('','0','0.0','False','false'):
-                    try:
-                        if float(v)!=0.0: allowed.add(j)
-                    except: allowed.add(j)
-            if allowed: include[r+1] = allowed
-        return include
+        if 'num_include' not in df.columns:
+            raise ValueError("include_list.csv must have a 'num_include' column")
+        row = df.loc[df['num_include'] == target_num_include]
+        if row.empty:
+            raise ValueError(f"include_list.csv: no row with num_include={target_num_include}")
+        row = row.iloc[0]
+
+        included: Set[int] = set()
+        # treat all columns except 'num_include' as node-id columns
+        for c in df.columns:
+            if str(c) == 'num_include':
+                continue
+            val = row[c]
+            if pd.isna(val):
+                continue
+            # consider any nonzero / truthy entry as 'included'
+            try:
+                if float(val) != 0.0:
+                    included.add(int(c))
+            except:
+                if str(val).strip().lower() not in ('', '0', 'false'):
+                    included.add(int(c))
+        # optional sanity check
+        if target_num_include and len(included) != target_num_include:
+            # not fatal, but useful to notice
+            print(f"[warn] include_list: expected {target_num_include}, got {len(included)} included nodes")
+        return included
 
     def read_scenario_prob(p: str) -> pd.DataFrame:
         df = pd.read_csv(must(p), sep=';')
@@ -96,10 +126,24 @@ def load_and_build(data_root: str, cfg_row: dict, *, symmetrise_infra: bool=Fals
     links_df = read_links(os.path.join(net_dir, "Edge.giv"))
     od_df    = read_od(   os.path.join(net_dir, "OD.giv"))
     lines    = read_lines(os.path.join(scen_dir, "lines.csv"))
-    include  = read_include_list(os.path.join(scen_dir, "include_list.csv"))
+    include_nodes = read_include_nodes(os.path.join(scen_dir, "include_list.csv"), num_include)  # <- NEW
     scen_p   = read_scenario_prob(os.path.join(scen_dir, "scenario_prob.csv"))
     scen_i   = read_scenario_infra(os.path.join(scen_dir, "scenario_infra.csv"))
     props    = read_properties_general(os.path.join(scen_dir, "properties_general.csv"))
+
+    # compute exclude as complement of include, in terms of original IDs
+    all_node_ids = set(stops_df['id'].astype(int).tolist())
+    if num_include > 0:
+        exclude_ids = all_node_ids - set(include_nodes)
+    else:
+        # if num_include==0, treat as 'no include filter'
+        exclude_ids = set()
+
+    # override props['exclude_nodes'] with this complement (IDs, not indices)
+    props['exclude_nodes'] = exclude_ids
+
+    # keep a simple include container compatible with DomainData/ModelData
+    include = {0: set(include_nodes)}  # one global include-set under key 0
 
     domain = DomainData(stops_df, links_df, od_df, lines, include, scen_p, scen_i, props, dict(cfg_row))
 
