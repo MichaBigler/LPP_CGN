@@ -121,6 +121,16 @@ def load_and_build(data_root: str, cfg_row: dict, *, symmetrise_infra: bool=Fals
             'exclude_nodes': {int(x) for x in str(row.get(ex_key,'')).split(',') if str(x).strip()!=''}
         }
 
+    def get_opt_int(d: dict, name: str, default: int = 0) -> int:
+        for k in d.keys():
+            if k.lower() == name.lower():
+                try:
+                    return int(d[k])
+                except Exception:
+                    return default
+        return default
+    num_od = get_opt_int(cfg_row, 'num_od', 0)  # 0 => kein Kürzen
+
     # ---------- read all ----------
     stops_df = read_stops(os.path.join(net_dir, "Stop.giv"))
     links_df = read_links(os.path.join(net_dir, "Edge.giv"))
@@ -131,19 +141,18 @@ def load_and_build(data_root: str, cfg_row: dict, *, symmetrise_infra: bool=Fals
     scen_i   = read_scenario_infra(os.path.join(scen_dir, "scenario_infra.csv"))
     props    = read_properties_general(os.path.join(scen_dir, "properties_general.csv"))
 
+    if num_od and num_od > 0:
+        # nur positive Nachfragen in die Auswahl (Diagonale ggf. später genullt)
+        cand = od_df[od_df['demand'] > 0].copy()
+        before = len(cand)
+        cand = cand.sort_values('demand', ascending=False)
+        od_df = cand.head(num_od).copy()
+        print(f"[od-limit] kept {len(od_df)} of {before} positive-demand ODs (num_od={num_od}).")
+
     # compute exclude as complement of include, in terms of original IDs
-    all_node_ids = set(stops_df['id'].astype(int).tolist())
-    if num_include > 0:
-        exclude_ids = all_node_ids - set(include_nodes)
-    else:
-        # if num_include==0, treat as 'no include filter'
-        exclude_ids = set()
 
-    # override props['exclude_nodes'] with this complement (IDs, not indices)
-    props['exclude_nodes'] = exclude_ids
-
-    # keep a simple include container compatible with DomainData/ModelData
-    include = {0: set(include_nodes)}  # one global include-set under key 0
+    include = {}
+    props['exclude_nodes'] = set()
 
     domain = DomainData(stops_df, links_df, od_df, lines, include, scen_p, scen_i, props, dict(cfg_row))
 
@@ -280,6 +289,7 @@ def load_and_build(data_root: str, cfg_row: dict, *, symmetrise_infra: bool=Fals
         A_node_line = csr_matrix((data, (rows, cols)), shape=(N, L))
         return A_edge_line, A_node_line
 
+    
     # ----- build in order -----
     node_id_to_idx, idx_to_node_id, N = build_node_indexing(domain.stops_df)
     len_a, t_min_a, t_max_a, idx_to_arc_uv, arc_uv_to_idx, E_dir = build_arcs(domain.links_df)

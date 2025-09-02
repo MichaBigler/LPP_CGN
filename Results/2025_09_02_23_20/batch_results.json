@@ -6,9 +6,13 @@
     "E_dir": 76,
     "L": 28,
     "S": 2,
-    "status": 2,
+    "status_code": 2,
+    "status": "OPTIMAL",
     "objective": 23893.17,
-    "runtime_s": 0.4960000514984131,
+    "cost_time": 13726.669999999995,
+    "cost_wait": 0.0,
+    "cost_oper": 10166.5,
+    "runtime_s": 0.4699997901916504,
     "freq": {
       "0": 3,
       "1": 1,
@@ -38,7 +42,11 @@
       "25": 1,
       "26": 0,
       "27": 1
-    }
+    },
+    "routing_agg": "origin",
+    "waiting_time": 0.0,
+    "max_frequency": 5,
+    "train_capacity": 50
   },
   {
     "row": 1,
@@ -47,9 +55,13 @@
     "E_dir": 76,
     "L": 28,
     "S": 2,
-    "status": 2,
+    "status_code": 2,
+    "status": "OPTIMAL",
     "objective": 42914.39,
-    "runtime_s": 41.22099995613098,
+    "cost_time": 26601.689999999995,
+    "cost_wait": 739.7000000000003,
+    "cost_oper": 15573.0,
+    "runtime_s": 41.24500012397766,
     "freq": {
       "0": 3,
       "1": 3,
@@ -79,7 +91,11 @@
       "25": 3,
       "26": 1,
       "27": 1
-    }
+    },
+    "routing_agg": "origin",
+    "waiting_time": 1.0,
+    "max_frequency": 5,
+    "train_capacity": 50
   },
   {
     "row": 2,
@@ -88,9 +104,13 @@
     "E_dir": 76,
     "L": 28,
     "S": 2,
-    "status": 2,
-    "objective": 42914.390000001054,
-    "runtime_s": 259.4720001220703,
+    "status_code": 2,
+    "status": "OPTIMAL",
+    "objective": 42914.39,
+    "cost_time": 26601.689999999995,
+    "cost_wait": 739.7000000000003,
+    "cost_oper": 15573.0,
+    "runtime_s": 43.37600016593933,
     "freq": {
       "0": 3,
       "1": 3,
@@ -120,6 +140,10 @@
       "25": 3,
       "26": 1,
       "27": 1
-    }
+    },
+    "routing_agg": "od",
+    "waiting_time": 1.0,
+    "max_frequency": 5,
+    "train_capacity": 50
   }
 ]

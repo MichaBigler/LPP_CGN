@@ -1,0 +1,10 @@
+source;network;scenario_line_data;procedure;algorithm;select_lines;optimize_lines;routing_agg;eliminate_subtours;eliminate_subtours_new;new_frequency;line_repl_allowed;gap;num_include;train_capacity;num_lines (opt);max_frequency;waiting_time;weight_line_costs;cost_repl_freq;cost_repl_line;repl_budget;num_od;status_code;status;objective;cost_time;cost_wait;cost_oper;runtime_s;N;E_dir;L;S
+lintim;SiouxFalls;SiouxFalls;one;simple;True;False;True;True;True;False;False;0.001;24;50;16;5;0;0.5;200;1000;-5;50;2;OPTIMAL;23893.17;13726.669999999995;0.0;10166.5;0.4659998416900635;24;76;28;2
+lintim;SiouxFalls;SiouxFalls;one;simple;True;False;True;True;True;False;False;0.001;24;50;16;5;20;0.5;200;1000;-5;50;2;OPTIMAL;28335.06999999995;13744.569999999972;4213.999999999978;10376.5;1.4529998302459717;24;76;28;2
+lintim;SiouxFalls;SiouxFalls;one;simple;True;False;False;True;True;False;False;0.001;24;50;16;5;20;0.5;200;1000;-5;50;2;OPTIMAL;28335.06999999995;13744.569999999972;4213.999999999978;10376.5;1.5280001163482666;24;76;28;2
+lintim;SiouxFalls;SiouxFalls;one;simple;True;False;True;True;True;False;False;0.001;24;50;16;5;1;0.5;200;1000;-5;50;2;OPTIMAL;24196.02;13726.669999999998;302.85000000000014;10166.5;9.039000034332275;24;76;28;2
+lintim;SiouxFalls;SiouxFalls;one;simple;True;False;False;True;True;False;False;0.001;24;50;16;5;1;0.5;200;1000;-5;50;2;OPTIMAL;24196.02;13726.669999999998;302.85000000000014;10166.5;10.395999908447266;24;76;28;2
+lintim;SiouxFalls;SiouxFalls;one;simple;True;False;True;True;True;False;False;0.001;24;50;16;5;-1;0.5;200;1000;-5;50;-1;ERROR;;;;;0.126;;;;
+lintim;SiouxFalls;SiouxFalls;one;simple;True;False;False;True;True;False;False;0.001;24;50;16;5;-1;0.5;200;1000;-5;50;-1;ERROR;;;;;0.109;;;;
+lintim;SiouxFalls;SiouxFalls;one;simple;True;False;True;True;True;False;False;0.001;24;50;16;5;0;0.5;200;1000;-5;50;2;OPTIMAL;23893.17;13726.669999999995;0.0;10166.5;0.5089998245239258;24;76;28;2
+lintim;SiouxFalls;SiouxFalls;one;simple;True;False;False;True;True;False;False;0.001;24;50;16;5;0;0.5;200;1000;-5;50;2;OPTIMAL;23893.17;13726.669999999995;0.0;10166.5;0.497999906539917;24;76;28;2

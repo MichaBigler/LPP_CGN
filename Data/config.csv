@@ -1,2 +1,6 @@
-source;network;scenario_line_data;procedure;algorithm;optimize_lines;routing_agg;eliminate_subtours;eliminate_subtours_new;new_frequency;line_repl_allowed;gap;num_include;train_capacity;num_lines (opt);max_frequency;weight_line_costs;cost_repl_freq;cost_repl_line;repl_budget
-lintim;SiouxFalls;SiouxFalls;one;simple;false;true;true;true;false;false;0.001;22;200;16;5;0.5;200;1000;-5
+source;network;scenario_line_data;procedure;algorithm;select_lines;optimize_lines;routing_agg;eliminate_subtours;eliminate_subtours_new;new_frequency;line_repl_allowed;gap;num_include;train_capacity;num_lines (opt);max_frequency;waiting_time;weight_line_costs;cost_repl_freq;cost_repl_line;repl_budget;num_od
+lintim;SiouxFalls;SiouxFalls;one;simple;true;false;true;true;true;false;false;0.001;24;50;16;5;0;0.5;200;1000;-5;50
+lintim;SiouxFalls;SiouxFalls;one;simple;true;false;true;true;true;false;false;0.001;24;50;16;5;-1;0.5;200;1000;-5;30
+lintim;SiouxFalls;SiouxFalls;one;simple;true;false;false;true;true;false;false;0.001;24;50;16;5;-1;0.5;200;1000;-5;30
+lintim;SiouxFalls;SiouxFalls;one;simple;true;false;true;true;true;false;false;0.001;24;50;16;5;-2;0.5;200;1000;-5;30
+lintim;SiouxFalls;SiouxFalls;one;simple;true;false;false;true;true;false;false;0.001;24;50;16;5;-2;0.5;200;1000;-5;30
