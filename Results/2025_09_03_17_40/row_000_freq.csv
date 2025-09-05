@@ -1,0 +1,12 @@
+line;group;freq_nom;freq_s1;freq_s2
+0;1;1;1;1
+1;1;1;1;1
+2;2;0;0;0
+3;2;0;0;0
+4;3;0;0;0
+5;3;0;0;0
+
+scenario;prob;objective;cost_time;cost_wait;cost_oper;cost_repl
+nominal;;6.0;2.0;0.0;4.0;
+1;0.4;6.0;2.0;0.0;4.0;-6.0
+2;0.6;6.0;2.0;0.0;4.0;-6.0

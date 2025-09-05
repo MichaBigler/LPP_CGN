@@ -1,0 +1,5 @@
+source;network;scenario_line_data;procedure;optimize_lines;routing_agg;eliminate_subtours;line_repl_allowed;waiting_time_frequency;gap;travel_time_cost_mult;waiting_time_cost_mult;line_operation_cost_mult;num_od;train_capacity;infrastructure_capacity;max_frequency;num_scenarios;cost_repl_freq;cost_repl_line;repl_budget;status;objective;cost_time;cost_wait;cost_oper;runtime_s;obj_stage1;obj_stage2_exp;repl_cost_exp
+lintim;Cross;Cross;separated;False;True;True;False;False;0;1;0;1;1;50;12;5;2;200;1000;-5;OPTIMAL;16.0;3.2;0.0;12.8;0.006999969482421875;10.0;6.0;0.0
+lintim;Cross;Cross;integrated;False;True;True;False;False;0;1;0;1;1;50;12;5;2;200;1000;-5;OPTIMAL;28.0;8.0;0.0;20.0;0.002000093460083008;14.0;14.0;0.0
+lintim;Cross;Cross;separated;False;True;True;False;False;0;1;0;1;1;50;12;5;2;1;1000;-5;OPTIMAL;16.0;3.2;0.0;12.8;0.006000041961669922;10.0;6.0;0.0
+lintim;Cross;Cross;integrated;False;True;True;False;False;0;1;0;1;1;50;12;5;2;1;1000;-5;ERROR;;;;;0.073;14.0;14.0;0.0

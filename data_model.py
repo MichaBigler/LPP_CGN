@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import List, Dict, Set, Tuple
+from dataclasses import dataclass, asdict
+from typing import List, Dict, Set, Tuple, Optional
 import pandas as pd
 import numpy as np
 from scipy.sparse import csr_matrix
@@ -21,6 +21,48 @@ class DomainData:
     scen_infra_df: pd.DataFrame
     props: dict
     config: dict
+
+@dataclass
+class Config:
+    # Pflichtpfade
+    source: str
+    network: str
+    scenario_line_data: str
+
+    # Schalter/Parameter aus deiner neuen config.csv
+    procedure: Optional[str] = None
+    optimize_lines: bool = False
+    routing_agg: bool = False
+    eliminate_subtours: bool = False
+    line_repl_allowed: bool = False
+
+    # Wartezeit: Frequenz-abhängig (True) vs. pauschal (False)
+    waiting_time_frequency: bool = True
+
+    # Solver/Weights
+    gap: float = 0.0
+    travel_time_cost_mult: float = 1.0
+    waiting_time_cost_mult: float = 1.0
+    line_operation_cost_mult: float = 1.0
+
+    # Ressourcen/Größen
+    num_od: int = 0
+    train_capacity: int = 200
+    infrastructure_capacity: int = 10
+    max_frequency: int = 5
+    num_scenarios: int = 1
+
+    # (noch unbenutzt, aber mitgenommen)
+    cost_repl_freq: float = 0.0
+    cost_repl_line: float = 0.0
+    repl_budget: float = 0.0
+
+    # optional: Frequenzwerte explizit (z. B. "1,2,3,4,6")
+    freq_values: Optional[List[int]] = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+    
 
 @dataclass
 class ModelData:
