@@ -1,5 +1,5 @@
 from dataclasses import dataclass, asdict
-from typing import List, Dict, Set, Tuple, Optional
+from typing import List, Dict, Set, Tuple, Optional, Literal
 import pandas as pd
 import numpy as np
 from scipy.sparse import csr_matrix
@@ -57,8 +57,14 @@ class Config:
     cost_repl_line: float = 0.0
     repl_budget: float = 0.0
 
+    
+
+
     # optional: Frequenzwerte explizit (z. B. "1,2,3,4,6")
     freq_values: Optional[List[int]] = None
+
+    cand_detour_count: int = 0
+    cand_ksp_count: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -95,3 +101,4 @@ class ModelData:
     adj_in: List[List[int]]
     A_edge_line: csr_matrix
     A_node_line: csr_matrix
+

@@ -131,6 +131,8 @@ def parse_config_row(cfg_row: dict) -> Config:
     net  = str(cfg_row[_cfg_key(cfg_row, 'network')])
     scen = str(cfg_row[_cfg_key(cfg_row, 'scenario_line_data')])
 
+    cand_default = _as_int(cfg_row.get('cand_count'), 0)
+
     return Config(
         source=src,
         network=net,
@@ -160,6 +162,9 @@ def parse_config_row(cfg_row: dict) -> Config:
         repl_budget=_as_float(cfg_row.get('repl_budget'), 0.0),
 
         freq_values=_as_int_list(cfg_row.get('freq_values')),
+
+        cand_detour_count=_as_int(cfg_row.get('cand_detour_count'), cand_default),
+        cand_ksp_count=_as_int(cfg_row.get('cand_ksp_count'), cand_default),
     )
 
 def read_scenario_prob_csv(path: str) -> pd.DataFrame:

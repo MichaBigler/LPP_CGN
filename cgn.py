@@ -7,74 +7,113 @@ class CGN:
     V: int; A: int
     in_arcs: List[List[int]]; out_arcs: List[List[int]]
     ground_of: List[int]
+
     arc_tail: List[int]; arc_head: List[int]
-    arc_kind: List[str]      # "ride" | "change" | "board" | "alight"
-    arc_line: List[int]      # line id for ride arcs, else -1
-    arc_line_to: List[int]   # target line id for change/board, else -1
-    arc_edge: List[int]      # directed infra arc index for ride arcs, else -1
+    arc_kind: List[str]            # "ride" | "change" | "board" | "alight"
+    arc_line: List[int]            # line id of the arc's layer (ride: that line; board/change: source line; -1 if N/A)
+    arc_edge: List[int]            # infra arc id (only for ride, else -1)
+    arc_variant: List[int]         # candidate index per layer arc; -1 if none
+
+    # NEW:
+    node_line: List[int]           # per CGN node: line id at node (-1 for ground)
+    node_variant: List[int]        # per CGN node: candidate index (-1 for ground)
+    arc_line_to: List[int]         # target line for waiting: board/change -> target line; else -1
+
 
 def make_cgn(data) -> CGN:
-    """Build CGN nodes and arcs (ground, per-line), with minimal metadata."""
+    """Build CGN (ohne Kandidaten, Variante=0), inkl. Felder für waiting-time."""
     GROUND = -1
-    cgn_nodes: List[Tuple[int,int]] = []
-    cgn_id: Dict[Tuple[int,int], int] = {}
 
-    # ground nodes for all physical nodes
-    ground_of = [None] * data.N
+    # --- Knoten anlegen ---
+    cgn_nodes: List[Tuple[int, int]] = []        # (phys_node, line) mit line=-1 für Ground
+    node_id: Dict[Tuple[int, int], int] = {}
+
+    ground_of: List[int] = [-1] * data.N
+    # Ground-Knoten
     for i in range(data.N):
         key = (i, GROUND)
-        cgn_id[key] = len(cgn_nodes)
-        ground_of[i] = cgn_id[key]
+        node_id[key] = len(cgn_nodes)
+        ground_of[i] = node_id[key]
         cgn_nodes.append(key)
 
-    # line-layer nodes only where a line visits the node; also collect lines per node
+    # Linien-Knoten: nur dort, wo Linie i bedient
     lines_at_node: Dict[int, List[int]] = {i: [] for i in range(data.N)}
     for ell in range(data.L):
         for i in data.line_idx_to_stops[ell]:
             key = (i, ell)
-            if key not in cgn_id:
-                cgn_id[key] = len(cgn_nodes)
+            if key not in node_id:
+                node_id[key] = len(cgn_nodes)
                 cgn_nodes.append(key)
             lines_at_node[i].append(ell)
 
     V = len(cgn_nodes)
 
+    # --- Node-Attribute ---
+    node_line: List[int] = [ell for (_i, ell) in cgn_nodes]
+    node_variant: List[int] = [(-1 if ell == GROUND else 0) for ell in node_line]
+
+    # --- Arcs anlegen ---
     arc_tail: List[int] = []; arc_head: List[int] = []
     arc_kind: List[str] = []; arc_line: List[int] = []
-    arc_line_to: List[int] = []; arc_edge: List[int] = []
+    arc_edge: List[int] = []; arc_variant: List[int] = []
+    arc_line_to: List[int] = []
 
-    # ride arcs along each line chain (need arc_edge for time/length)
+    # 1) ride arcs entlang jeder Linie
     for ell in range(data.L):
         stops = data.line_idx_to_stops[ell]
-        arcs  = data.line_idx_to_arcs[ell]  # aligned with stops
+        arcs  = data.line_idx_to_arcs[ell]  # gleiche Länge wie stops-1
         for p, a in enumerate(arcs):
-            u, v = stops[p], stops[p+1]
-            arc_tail.append(cgn_id[(u, ell)]); arc_head.append(cgn_id[(v, ell)])
-            arc_kind.append("ride"); arc_line.append(ell); arc_line_to.append(-1); arc_edge.append(a)
+            u, v = stops[p], stops[p + 1]
+            tail = node_id[(u, ell)]
+            head = node_id[(v, ell)]
+            arc_tail.append(tail);           arc_head.append(head)
+            arc_kind.append("ride");         arc_line.append(ell)
+            arc_edge.append(int(a));         arc_variant.append(0)
+            arc_line_to.append(-1)           # ride erzeugt keine Wartezeit
 
-    # change arcs: i^l1 -> i^l2 for all l1 != l2 that serve i
+    # 2) change arcs: i^l1 -> i^l2 (l1 != l2)
     for i in range(data.N):
         L_i = sorted(set(lines_at_node[i]))
         for l1 in L_i:
             for l2 in L_i:
-                if l1 == l2: continue
-                arc_tail.append(cgn_id[(i, l1)]); arc_head.append(cgn_id[(i, l2)])
-                arc_kind.append("change"); arc_line.append(-1); arc_line_to.append(l2); arc_edge.append(-1)
+                if l1 == l2: 
+                    continue
+                tail = node_id[(i, l1)]
+                head = node_id[(i, l2)]
+                arc_tail.append(tail);        arc_head.append(head)
+                arc_kind.append("change");    arc_line.append(l1)     # Quelle (nur Diagnose)
+                arc_edge.append(-1);          arc_variant.append(0)
+                arc_line_to.append(l2)        # **Ziel-Linie für Waiting!**
 
-    # board/alight arcs at each served node
+    # 3) board/alight an jedem bedienten Knoten
     for i in range(data.N):
         for ell in sorted(set(lines_at_node[i])):
+            v_line = node_id[(i, ell)]
+            v_grnd = ground_of[i]
             # board: ground -> line
-            arc_tail.append(ground_of[i]); arc_head.append(cgn_id[(i, ell)])
-            arc_kind.append("board"); arc_line.append(-1); arc_line_to.append(ell); arc_edge.append(-1)
+            arc_tail.append(v_grnd);          arc_head.append(v_line)
+            arc_kind.append("board");         arc_line.append(ell)    # (nur Diagnose)
+            arc_edge.append(-1);              arc_variant.append(0)
+            arc_line_to.append(ell)           # **Ziel-Linie für Waiting!**
             # alight: line -> ground
-            arc_tail.append(cgn_id[(i, ell)]); arc_head.append(ground_of[i])
-            arc_kind.append("alight"); arc_line.append(-1); arc_line_to.append(-1); arc_edge.append(-1)
+            arc_tail.append(v_line);          arc_head.append(v_grnd)
+            arc_kind.append("alight");        arc_line.append(ell)
+            arc_edge.append(-1);              arc_variant.append(0)
+            arc_line_to.append(-1)            # keine Waiting-Kopplung
 
     A = len(arc_tail)
+
     in_arcs  = [[] for _ in range(V)]
     out_arcs = [[] for _ in range(V)]
     for a, (t, h) in enumerate(zip(arc_tail, arc_head)):
-        out_arcs[t].append(a); in_arcs[h].append(a)
+        out_arcs[t].append(a)
+        in_arcs[h].append(a)
 
-    return CGN(V, A, in_arcs, out_arcs, ground_of, arc_tail, arc_head, arc_kind, arc_line, arc_line_to, arc_edge)
+    # *** WICHTIG: Rückgabe-Reihenfolge exakt wie im Dataclass! ***
+    return CGN(
+        V, A,
+        in_arcs, out_arcs,
+        ground_of,
+        arc_tail, arc_head, arc_kind, arc_line, arc_edge, arc_variant,
+        node_line, node_variant, arc_line_to
+    )

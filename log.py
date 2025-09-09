@@ -16,11 +16,10 @@ import pandas as pd
 
 
 BASE_EXTRA_COLS = [
-    "status", "objective",
-    "cost_time", "cost_wait", "cost_oper",
-    "runtime_s", 
-    # new (optional) two-stage KPIs:
-    "obj_stage1", "obj_stage2_exp", "repl_cost_exp"
+    "status_code","status","objective","runtime_s",
+    "cost_time","cost_wait","cost_oper",
+    "obj_stage1","obj_stage2_exp",
+    "repl_cost_freq_exp","repl_cost_path_exp","repl_cost_exp",
 ]
 
 
@@ -142,4 +141,66 @@ class RunBatchLogger:
         df_out = pd.concat([df_meta, df_freq], ignore_index=True)
         path = os.path.join(self.out_dir, f"row_{int(run_index):03d}_freq.csv")
         df_out.to_csv(path, sep=';', index=False)
+        return path
+    
+    def write_candidates(
+        self,
+        run_index: int,
+        model,
+        cand_all: dict,
+        *,
+        c_repl_line: float = 0.0,
+        selected: dict | None = None,   # NEU
+    ) -> str:
+        import pandas as pd, os
+
+        idx_to_arc_uv = model.idx_to_arc_uv
+
+        def nodes_from_arcs(arcs):
+            if not arcs: return []
+            u0, _ = idx_to_arc_uv[arcs[0]]
+            seq = [int(u0)]
+            for a in arcs:
+                _, v = idx_to_arc_uv[a]
+                seq.append(int(v))
+            return seq
+
+        rows = []
+        for s, per_g in cand_all.items():
+            chosen_g = (selected or {}).get(s, {})  # Dict[g] -> k
+            for g, cand_list in per_g.items():
+                sel_k = chosen_g.get(g, None)
+                for k, cand in enumerate(cand_list):
+                    arcs = list(map(int, cand.get("arcs", [])))
+                    nodes = nodes_from_arcs(arcs)
+                    arcs_uv = ";".join(f"{u}->{v}" for (u, v) in (idx_to_arc_uv[a] for a in arcs))
+                    nodes_id = ",".join(map(str, nodes))
+
+                    path_len  = float(cand.get("len", 0.0))
+                    delta_len = float(cand.get("add_len", 0.0) + cand.get("rem_len", 0.0))
+                    unit_cost = delta_len * float(c_repl_line)
+                    kind = str(cand.get("kind", "alt"))
+
+                    rows.append({
+                        "run": int(run_index),
+                        "scenario": int(s),
+                        "group": int(g),
+                        "cand_id": int(k),
+                        "kind": kind,
+                        "start_id": nodes[0] if nodes else "",
+                        "end_id": nodes[-1] if nodes else "",
+                        "nodes": nodes_id,
+                        "arcs": arcs_uv,
+                        "path_len": path_len,
+                        "delta_len_vs_nom": delta_len,
+                        "unit_repl_cost_per_freq": unit_cost,
+                        "selected": 1 if sel_k == k else 0,  # NEU
+                    })
+
+        df = pd.DataFrame(rows, columns=[
+            "run","scenario","group","cand_id","kind","start_id","end_id",
+            "nodes","arcs","path_len","delta_len_vs_nom","unit_repl_cost_per_freq","selected"
+        ])
+        path = os.path.join(self.out_dir, f"candidates_run_{int(run_index):03d}.csv")
+        df.to_csv(path, sep=';', index=False)
         return path

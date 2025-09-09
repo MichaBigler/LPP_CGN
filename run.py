@@ -7,9 +7,24 @@ import traceback
 import pandas as pd
 
 from load_data import load_and_build
-from solve_cgn import solve_one_stage, solve_two_stage_integrated, solve_two_stage_separated
+from solve_cgn_one_stage import solve_one_stage
+from solve_cgn_separated import solve_two_stage_separated
+from solve_cgn_integrated import solve_two_stage_integrated
+
 from print import print_domain_summary, print_model_summary  # optional
-from log import RunBatchLogger                    # zentraler Logger
+from log import RunBatchLogger
+
+def _agg_components_two_stage(solution):
+    nom = solution.get("costs_0") or {}
+    scen_list = solution.get("scenarios") or []
+
+    def _sum_scens(key):
+        return sum(float(s.get("prob") or 0.0) * float(s.get(key) or 0.0) for s in scen_list)
+
+    agg_time = float(nom.get("time") or 0.0) + _sum_scens("cost_time")
+    agg_wait = float(nom.get("wait") or 0.0) + _sum_scens("cost_wait")
+    agg_oper = float(nom.get("oper") or 0.0) + _sum_scens("cost_oper")
+    return agg_time, agg_wait, agg_oper
 
 
 def _as_bool(x, default=False):
@@ -84,17 +99,21 @@ def main():
 
 
             if proc in ("one", "one_stage"):
-                costs = solution.get("costs_0") or {}
+                
+                agg_time, agg_wait, agg_oper = _agg_components_two_stage(solution)
+
                 base_row.update({
                     "status": _status_name(solution.get("status")),
-                    "objective":   solution.get("objective"),
-                    "runtime_s":   solution.get("runtime_s"),
-                    "cost_time":   costs.get("time"),
-                    "cost_wait":   costs.get("wait"),
-                    "cost_oper":   costs.get("oper"),
-                    "obj_stage1":     None,
-                    "obj_stage2_exp": None,
-                    "repl_cost_exp":  None,
+                    "objective":     solution.get("objective"),
+                    "runtime_s":     solution.get("runtime_s"),
+                    "cost_time":     agg_time,
+                    "cost_wait":     agg_wait,
+                    "cost_oper":     agg_oper,
+                    "obj_stage1":    solution.get("obj_stage1"),
+                    "obj_stage2_exp": solution.get("obj_stage2_exp"),
+                    "repl_cost_freq_exp": solution.get("repl_cost_freq_exp"),
+                    "repl_cost_path_exp": solution.get("repl_cost_path_exp"),
+                    "repl_cost_exp":  solution.get("repl_cost_exp"),
                 })
                 logger.write_freq_file(i, solution.get("chosen_freq") or artifacts.get("chosen_freq", {}))
             else:
@@ -118,9 +137,10 @@ def main():
                     "cost_oper":     agg_oper,
                     "obj_stage1":    solution.get("obj_stage1"),
                     "obj_stage2_exp": solution.get("obj_stage2_exp"),
+                    "repl_cost_freq_exp": solution.get("repl_cost_freq_exp"),
+                    "repl_cost_path_exp": solution.get("repl_cost_path_exp"),
                     "repl_cost_exp":  solution.get("repl_cost_exp"),
                 })
-
                 # breite Frequenz-CSV inkl. Nominal-Kosten
                 logger.write_freqs_two_stage(
                     i, model,
@@ -128,6 +148,16 @@ def main():
                     scenarios=solution.get("scenarios", []),
                     nominal_costs=solution.get("costs_0", {})
                 )
+
+                cand_all = artifacts.get("candidates", {})
+                cand_selected = artifacts.get("cand_selected", None)
+                c_repl_line = float(domain.config.get("cost_repl_line", 0.0))
+                if cand_all:
+                    logger.write_candidates(
+                        i, model, cand_all,
+                        c_repl_line=c_repl_line,
+                        selected=cand_selected,   # NEU
+                    )
 
             print(f"Status={_status_name(solution.get('status'))}  Obj={solution.get('objective')}  "
                 f"Stage1={base_row.get('obj_stage1')}  Stage2_exp={base_row.get('obj_stage2_exp')}  "

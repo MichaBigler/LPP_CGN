@@ -5,7 +5,7 @@
 # -----------------------------------------------------------------------------
 
 from collections import deque
-from typing import Dict, List, Tuple, Iterable, Any, Optional
+from typing import Dict, List, Tuple, Iterable, Any, Optional, TypeGuard, Union
 import numpy as np
 import gurobipy as gp
 from cgn import CGN
@@ -16,6 +16,17 @@ from cgn import CGN
 def od_pairs(data) -> List[Tuple[int, int]]:
     """Liste aller (o,d) mit positiver Nachfrage im Indexraum 0..N-1."""
     return [(o, d) for o in range(data.N) for d in range(data.N) if data.D[o, d] > 0]
+
+ODKey = Tuple[int, int]
+OriginKey = int
+FlowKey = Union[ODKey, OriginKey]
+
+def _is_od_key(x: object) -> TypeGuard[ODKey]:
+    return (
+        isinstance(x, tuple)
+        and len(x) == 2
+        and all(isinstance(t, (int, np.integer)) for t in x)
+    )
 
 
 def cgn_reachable_for_od(cgn: CGN, data, o: int, d: int):
@@ -344,65 +355,209 @@ def build_obj_invehicle(
 
 
 def build_obj_waiting(
-    m, data, cgn, x, arc_to_ods, freq_vals, delta,
+    m, data, cgn, x, arc_to_keys, freq_vals, delta,
     include_origin_wait=False,
     waiting_time_frequency=True
 ):
     """
     Returns (wait_expr_raw, y_vars_or_None).
 
-    waiting_time_frequency == True  -> half-headway via linearisation (depends on chosen frequencies)
-    waiting_time_frequency == False -> flat per-change penalty: 1.0 * sum flow on change-like arcs
-                                      (the multiplier comes from waiting_time_cost_mult in the objective)
+    waiting_time_frequency == True:
+       half-headway via linearisation using selected frequencies per target line.
+       Uses cgn.arc_line_to[a] for board/change arcs.
+    waiting_time_frequency == False:
+       flat penalty: 1.0 * sum flow on change-like arcs (board optional).
     """
-    # betroffene Arcs einsammeln
+    # collect change-like arcs
     change_like = [a for a in range(cgn.A) if cgn.arc_kind[a] == "change"]
     if include_origin_wait:
         change_like += [a for a in range(cgn.A) if cgn.arc_kind[a] == "board"]
 
     if not waiting_time_frequency:
-        # --- FLAT: keine y-Variablen, 1.0 pro "Ereignis" (Board/Change) * Flow
         wait_expr_raw = gp.quicksum(
-            x[a, key] for a in change_like for key in arc_to_ods.get(a, [])
+            x[a, key] for a in change_like for key in arc_to_keys.get(a, [])
         )
         return wait_expr_raw, None
 
-    # --- FREQ-abhängig: linearisierte half-headway-Kosten
     R = len(freq_vals)
     y = m.addVars(((a, r) for a in change_like for r in range(R)), lb=0.0, name="chg_split")
 
-    # Demand je Key (funktioniert für (o,d) und für o)
-    def _dem_for_key(key) -> float:
+    # demand per key, supports (o,d) and o
+    def _dem_for_key(key: object) -> float:
         if isinstance(key, tuple) and len(key) == 2:
             o, d = key
-            return float(data.D[o, d])
-        else:
+            return float(data.D[int(o), int(d)])
+        elif isinstance(key, (int, np.integer)):
             o = int(key)
-            return float(data.D[o, :].sum())
+            return float(np.asarray(data.D[o, :]).sum())
+        else:
+            raise TypeError(f"Unsupported flow key type: {type(key)} -> {key}")
 
-    # enges Big-M pro Arc
+    # tight Big-M per arc (sum flows on that arc)
     M_arc = [0.0] * cgn.A
     for a in change_like:
-        M_arc[a] = sum(_dem_for_key(key) for key in arc_to_ods.get(a, []))
+        M_arc[a] = sum(_dem_for_key(key) for key in arc_to_keys.get(a, []))
 
-    # Splitting-Bedingungen
+    # split constraints and activation by target line ell_to
     for a in change_like:
-        keys = arc_to_ods.get(a, [])
+        keys = arc_to_keys.get(a, [])
         m.addConstr(
             gp.quicksum(y[a, r] for r in range(R)) ==
             gp.quicksum(x[a, key] for key in keys),
             name=f"chg_split_sum[a{a}]"
         )
-        ell_to = cgn.arc_line_to[a]
+
+        ell_to = int(cgn.arc_line_to[a])
+        if ell_to < 0:
+            # shouldn't happen (we excluded 'alight')
+            # bind y[a,r] = 0 if no target line
+            for r in range(R):
+                m.addConstr(y[a, r] == 0.0, name=f"chg_split_off[a{a},r{r}]")
+            continue
+
         for r in range(R):
             m.addConstr(
-                y[a, r] <= M_arc[a] * delta[ell_to, r],
-                name=f"chg_split_on[{a},{r}]"
+                y[a, r] <= M_arc[a] * delta[(ell_to, r)],
+                name=f"chg_split_on[a{a},r{r}]"
             )
 
     wait_expr_raw = 0.5 * gp.quicksum((1.0 / freq_vals[r]) * y[a, r] for (a, r) in y.keys())
     return wait_expr_raw, y
 
+def add_candidate_choice(m: gp.Model, model, zs: Dict[int, gp.Var],
+                         candidates_s: Dict[int, List[Dict]],
+                         name="cand"):
+    """
+    y[g,k] ∈ {0,1};  Sum_k y[g,k] == z_s[g]   (genau ein Kandidat, wenn Gruppe aktiv)
+    Rückgabe: y (Dict[(g,k)] -> Var)
+    """
+    y: Dict[Tuple[int,int], gp.Var] = {}
+    for g, cand_list in candidates_s.items():
+        if not cand_list:
+            continue
+        # y-Variablen anlegen
+        vars_g = []
+        for k in range(len(cand_list)):
+            y[g, k] = m.addVar(vtype=gp.GRB.BINARY, name=f"{name}_y[g{g},k{k}]")
+            vars_g.append(y[g, k])
+        # genau-einer-wenn-aktiv
+        if g in zs:
+            m.addConstr(gp.quicksum(vars_g) == zs[g], name=f"{name}_oneof[g{g}]")
+        else:
+            # falls ihr z_s nicht nutzt: erzwinge genau einen (immer an)
+            m.addConstr(gp.quicksum(vars_g) == 1, name=f"{name}_oneof[g{g}]")
+    return y
+
+def add_passenger_capacity_with_candidates(
+    m: gp.Model, model, cgn, x, f_expr: Dict[int, gp.LinExpr], arc_to_keys,
+    Q: int, y: Dict[Tuple[int,int], gp.Var], candidates_s: Dict[int, List[Dict]],
+    name="pass_cap"
+):
+    # --- rev Map für „beide Richtungen“ (siehe Punkt 2) ---
+    by_uv = {uv: a for a, uv in enumerate(model.idx_to_arc_uv)}
+    rev = [by_uv.get((v,u)) for (u,v) in model.idx_to_arc_uv]
+
+    # Precompute: pro (g,a) welche k gültig sind  (inkl. Reverse-Arc!)
+    ga_to_ks: Dict[Tuple[int,int], List[int]] = {}
+    for g, cand_list in candidates_s.items():
+        for k, cand in enumerate(cand_list):
+            for a in cand.get("arcs", []):
+                a = int(a)
+                ar = rev[a]
+                ga_to_ks.setdefault((g, a), []).append(k)
+                if ar is not None:
+                    ga_to_ks.setdefault((g, ar), []).append(k)
+
+    for r in range(cgn.A):
+        if cgn.arc_kind[r] != "ride":
+            continue
+        ell = int(cgn.arc_line[r])
+        a   = int(cgn.arc_edge[r])
+        g   = int(model.line_idx_to_group[ell])
+
+        keys = arc_to_keys.get(r, [])
+        if not keys:
+            # kein Fluss auf diesem Ride-Arc -> keine Kapazitäts-NB nötig
+            continue
+
+        # **Fix**: x[a, key] statt x[key]
+        # (Optional) Safety-Guard, hilft beim Debuggen:
+        # for key in keys:
+        #     if (r, key) not in x:
+        #         raise KeyError(f"x hat Key (a={r}, key={key}) nicht. Beispiel-Key in x: {next(iter(x.keys()))!r}")
+
+        flow_sum = gp.quicksum(x[r, key] for key in keys)
+
+        ks = ga_to_ks.get((g, a), [])
+        avail = gp.quicksum(y[g, k] for k in ks) if ks else gp.LinExpr(0.0)
+
+        m.addConstr(flow_sum <= Q * f_expr[ell] * avail, name=f"{name}[r{r}]")
+
+def add_infrastructure_capacity_with_candidates(
+    m: gp.Model, model, f_expr: Dict[int, gp.LinExpr],
+    y: Dict[Tuple[int,int], gp.Var], candidates_s: Dict[int, List[Dict]],
+    cap_per_arc, name="infra_cap"
+):
+    """
+    Je infra-Arc a:
+      Sum_{Gruppen g} Sum_{Linien ell∈g} Sum_{k} f_ell * y[g,k] * I[a∈cand(g,k)]  ≤  cap[a]
+    """
+    # Linien je Gruppe
+    lines_by_group: Dict[int, List[int]] = {}
+    for g, (fwd, bwd) in model.line_group_to_lines.items():
+        lines_by_group[g] = [ell for ell in (fwd, bwd) if ell is not None and ell >= 0]
+
+    # Inzidenz (g,a) -> [k...]
+    ga_to_ks: Dict[Tuple[int,int], List[int]] = {}
+    for g, cand_list in candidates_s.items():
+        for k, cand in enumerate(cand_list):
+            for a in cand.get("arcs", []):
+                ga_to_ks.setdefault((g, int(a)), []).append(k)
+
+    E = int(model.E_dir)
+    for a in range(E):
+        # Sum über Gruppen/Linien/Kandidaten
+        terms = []
+        for g, Lg in lines_by_group.items():
+            ks = ga_to_ks.get((g, a), [])
+            if not ks:
+                continue
+            ysum = gp.quicksum(y[g, k] for k in ks)
+            for ell in Lg:
+                terms.append(f_expr[ell] * ysum)
+        if not terms:
+            continue
+        m.addConstr(gp.quicksum(terms) <= float(cap_per_arc[a]), name=f"{name}[a{a}]")
+
+def add_path_replanning_cost(
+    m: gp.Model, model,
+    y: Dict[Tuple[int,int], gp.Var],
+    candidates_s: Dict[int, List[Dict]],
+    f_expr: Dict[int, gp.LinExpr],
+    cost_repl_line: float
+):
+    """
+    Kosten_s(Pfad) = Sum_g  ( Sum_k y[g,k] * (add_len+rem_len)_gk ) * F_g
+    F_g = Frequenz der Gruppe (wir verwenden den repräsentativen ell).
+    Falls beide Richtungen separat als Linien angelegt sind, ist F_g = f_{ell_rep}.
+    """
+    # Repräsentative Linie je Gruppe
+    rep = {}
+    for g, (fwd, bwd) in model.line_group_to_lines.items():
+        rep[g] = fwd if fwd is not None and fwd >= 0 else (bwd if bwd is not None and bwd >= 0 else None)
+
+    terms = []
+    for g, cand_list in candidates_s.items():
+        ell_rep = rep.get(g, None)
+        if ell_rep is None or not cand_list:
+            continue
+        Fg = f_expr[ell_rep]               # Frequenz der Gruppe im Szenario
+        for k, cand in enumerate(cand_list):
+            delta_len_nom = float(cand.get("add_len_nom", 0.0) + cand.get("rem_len_nom", 0.0))
+            if delta_len_nom == 0.0:
+                continue
+            terms.append(cost_repl_line * delta_len_nom * y[g, k] * Fg)
+    return gp.quicksum(terms) if terms else gp.LinExpr(0.0)
 
 def build_obj_operating(
     data,
@@ -419,6 +574,7 @@ def build_obj_operating(
     ]
     oper_expr = gp.quicksum(f_expr[ell] * line_len[ell] for ell in range(data.L))
     return oper_expr, line_len
+
 
 
 # ----------------------------- Zielfunktion -----------------------------
