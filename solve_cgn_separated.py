@@ -3,7 +3,7 @@ import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 from prepare_cgn_candidates import make_cgn_with_candidates_per_line
-from find_candidates import build_candidates_all_scenarios_per_line
+from find_candidates import build_candidates_all_scenarios_per_line_cfg
 from optimisation import (
     od_pairs, add_flow_conservation, add_flow_conservation_by_origin,
     add_passenger_capacity, add_infrastructure_capacity,
@@ -50,7 +50,13 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
 
     # 2) Stage 2 per scenario
     detour_cnt, ksp_cnt = _cand_counts(domain)
-    cand_all_lines = build_candidates_all_scenarios_per_line(model, detour_cnt, ksp_cnt)
+
+    cand_cfg = getattr(domain, "cand_cfg", None)
+    if cand_cfg is None:
+        from data_model import CandidateConfig
+        cand_cfg = CandidateConfig()  # Fallback-Defaults
+
+    cand_all_lines = build_candidates_all_scenarios_per_line_cfg(model, cand_cfg, domain.config)
     lines_by_group = {}
     for g, (fwd, bwd) in model.line_group_to_lines.items():
         lines_by_group[g] = [ell for ell in (fwd, bwd) if ell is not None and ell >= 0]

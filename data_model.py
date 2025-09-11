@@ -77,19 +77,19 @@ class CandidateConfig:
     max_candidates_per_line: int = 20
     div_min_edges: int = 1
 
-    # Kosten-Gewichte für Ranking (None => aus Haupt-Config spiegeln)
-    w_len: Optional[float] = None
-    w_repl: Optional[float] = None
+    # Kosten-Gewichte für Ranking/Heuristik (None => aus Haupt-Config spiegeln)
+    w_len: Optional[float] = None          # spiegelt line_operation_cost_mult
+    w_repl: Optional[float] = None         # spiegelt cost_repl_line
 
-    # Korridor (zulässige Längenausweitung ggü. Referenz)
+    # Korridor (Pfadlänge ≤ (1+corr_eps) * Referenzlänge)
     corr_eps: float = 0.25
 
-    # wann generieren & Richtungsspiegelung
+    # Erzeugungs-Policies
     generate_only_if_disrupted: bool = True
-    mirror_backward: str = "auto"   # "auto" | "force" | "off"
+    mirror_backward: Literal["auto", "force", "off"] = "auto"
 
-    def resolve_weights(self, main_cfg: Config) -> Tuple[float, float]:
-        """Gewichte auflösen (falls None → aus main config spiegeln)."""
+    def resolve_weights(self, main_cfg: "Config") -> Tuple[float, float]:
+        """Gewichte auflösen (falls None → aus Haupt-Config spiegeln)."""
         w_len = self.w_len if self.w_len is not None else float(main_cfg.line_operation_cost_mult)
         w_repl = self.w_repl if self.w_repl is not None else float(main_cfg.cost_repl_line)
         return float(w_len), float(w_repl)

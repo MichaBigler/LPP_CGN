@@ -7,6 +7,7 @@ import traceback
 import pandas as pd
 
 from load_data import load_and_build
+from load_candidates_config import load_candidate_config
 from solve_cgn_one_stage import solve_one_stage
 from solve_cgn_separated import solve_two_stage_separated
 from solve_cgn_integrated import solve_two_stage_integrated
@@ -58,6 +59,9 @@ def main():
     cfg_path  = os.path.join(data_root, "Data", "config.csv")
     cfg_df    = pd.read_csv(cfg_path, sep=';')
 
+    cand_cfg = load_candidate_config(data_root)
+
+
     # optional hübsche Konsolenprints
     verbose = _as_bool(os.environ.get("VERBOSE_PRINTS", "0"), default=False)
 
@@ -80,6 +84,7 @@ def main():
                 symmetrise_infra=False,
                 zero_od_diagonal=False,
             )
+            setattr(domain, "cand_cfg", cand_cfg)
 
             if verbose:
                 print_domain_summary(domain, max_rows=5, max_lines=5, max_include=5)
