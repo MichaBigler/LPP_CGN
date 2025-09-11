@@ -8,7 +8,7 @@ from collections import deque
 from typing import Dict, List, Tuple, Iterable, Any, Optional, TypeGuard, Union
 import numpy as np
 import gurobipy as gp
-from cgn import CGN
+from prepare_cgn import CGN
 
 
 # --------------------------- Hilfsfunktionen ---------------------------
@@ -179,34 +179,7 @@ def add_flow_conservation(m: gp.Model, data, cgn: CGN, K: List[Tuple[int, int]])
 
 # ----------------------------- Frequenzen -----------------------------
 
-def add_frequency(m: gp.Model, L: int, freq_vals: List[int], z: gp.MVar | None = None):
-    """
-    Diskrete Frequenzwahl pro Linie:
-      delta[ell,r] ∈ {0,1}, Sum_r delta[ell,r] = 1 (oder = z[ell], falls Linienaktivierung modelliert wird)
-      f_expr[ell] = Sum_r f_r * delta[ell,r]
-      h_expr[ell] = Sum_r (1/f_r) * delta[ell,r]   (falls benötigt)
-    """
-    R = len(freq_vals)
-    delta = m.addVars(L, R, vtype=gp.GRB.BINARY, name="delta")
-    if z is None:
-        m.addConstrs(
-            (gp.quicksum(delta[ell, r] for r in range(R)) == 1 for ell in range(L)),
-            name="pick1",
-        )
-    else:
-        m.addConstrs(
-            (gp.quicksum(delta[ell, r] for r in range(R)) == z[ell] for ell in range(L)),
-            name="pick_or_off",
-        )
 
-    f_expr = {
-        ell: gp.quicksum(freq_vals[r] * delta[ell, r] for r in range(R)) for ell in range(L)
-    }
-    h_expr = {
-        ell: gp.quicksum((1.0 / freq_vals[r]) * delta[ell, r] for r in range(R))
-        for ell in range(L)
-    }
-    return delta, f_expr, h_expr
 
 def add_frequency_grouped(m: gp.Model, model, freq_vals: List[int]):
     """
@@ -424,140 +397,88 @@ def build_obj_waiting(
     wait_expr_raw = 0.5 * gp.quicksum((1.0 / freq_vals[r]) * y[a, r] for (a, r) in y.keys())
     return wait_expr_raw, y
 
-def add_candidate_choice(m: gp.Model, model, zs: Dict[int, gp.Var],
-                         candidates_s: Dict[int, List[Dict]],
-                         name="cand"):
+
+def add_candidate_choice_per_line(m, model, z_g, cand_by_line, name="cand_line"):
     """
-    y[g,k] ∈ {0,1};  Sum_k y[g,k] == z_s[g]   (genau ein Kandidat, wenn Gruppe aktiv)
-    Rückgabe: y (Dict[(g,k)] -> Var)
+    z_g: gp.tupledict group on/off (aus add_frequency_grouped)
+    cand_by_line[ell] = Liste Kandidaten
+    Returns: y_line[(ell,k)] ∈ {0,1},  Sum_k y_line[(ell,k)] = z_g[g(ell)]
     """
-    y: Dict[Tuple[int,int], gp.Var] = {}
-    for g, cand_list in candidates_s.items():
+    y = {}
+    for ell, cand_list in cand_by_line.items():
+        g = int(model.line_idx_to_group[ell])
         if not cand_list:
+            # keine Kandidaten -> Linie muss aus sein
+            m.addConstr(z_g[g] == 0, name=f"{name}_force_off[g{g},l{ell}]")
             continue
-        # y-Variablen anlegen
-        vars_g = []
+        vars_ell = []
         for k in range(len(cand_list)):
-            y[g, k] = m.addVar(vtype=gp.GRB.BINARY, name=f"{name}_y[g{g},k{k}]")
-            vars_g.append(y[g, k])
-        # genau-einer-wenn-aktiv
-        if g in zs:
-            m.addConstr(gp.quicksum(vars_g) == zs[g], name=f"{name}_oneof[g{g}]")
-        else:
-            # falls ihr z_s nicht nutzt: erzwinge genau einen (immer an)
-            m.addConstr(gp.quicksum(vars_g) == 1, name=f"{name}_oneof[g{g}]")
+            y[ell, k] = m.addVar(vtype=gp.GRB.BINARY, name=f"{name}_y[l{ell},k{k}]")
+            vars_ell.append(y[ell, k])
+        m.addConstr(gp.quicksum(vars_ell) == z_g[g], name=f"{name}_oneof[l{ell}]")
     return y
 
-def add_passenger_capacity_with_candidates(
-    m: gp.Model, model, cgn, x, f_expr: Dict[int, gp.LinExpr], arc_to_keys,
-    Q: int, y: Dict[Tuple[int,int], gp.Var], candidates_s: Dict[int, List[Dict]],
-    name="pass_cap"
+
+def add_passenger_capacity_with_candidates_per_line(
+    m, model, cgn, x, f_expr, arc_to_keys, Q, y_line, name="pass_cap"
 ):
-    # --- rev Map für „beide Richtungen“ (siehe Punkt 2) ---
-    by_uv = {uv: a for a, uv in enumerate(model.idx_to_arc_uv)}
-    rev = [by_uv.get((v,u)) for (u,v) in model.idx_to_arc_uv]
+    """
+    Für jeden CGN-Ride-Arc r (gehört zu Linie ell und Variante k_r):
+        Sum_{flows auf r} x[r,·]  ≤  Q * f_ell(s) * y_{ell,k_r}
 
-    # Precompute: pro (g,a) welche k gültig sind  (inkl. Reverse-Arc!)
-    ga_to_ks: Dict[Tuple[int,int], List[int]] = {}
-    for g, cand_list in candidates_s.items():
-        for k, cand in enumerate(cand_list):
-            for a in cand.get("arcs", []):
-                a = int(a)
-                ar = rev[a]
-                ga_to_ks.setdefault((g, a), []).append(k)
-                if ar is not None:
-                    ga_to_ks.setdefault((g, ar), []).append(k)
-
+    - Damit fließt nur dann etwas auf genau diesem Varianten-Arc, wenn GENAU diese Variante gewählt ist.
+    - f_expr[ell] ist die (Szenario-)Frequenz der Linie ell.
+    """
     for r in range(cgn.A):
         if cgn.arc_kind[r] != "ride":
             continue
-        ell = int(cgn.arc_line[r])
-        a   = int(cgn.arc_edge[r])
-        g   = int(model.line_idx_to_group[ell])
 
+        ell = int(cgn.arc_line[r])
+        k_r = int(cgn.arc_variant[r])   # Variantenindex dieses Ride-Arcs
+
+        # x ist als (r, key) indiziert; arc_to_keys[r] liefert die flow-keys auf r
         keys = arc_to_keys.get(r, [])
         if not keys:
-            # kein Fluss auf diesem Ride-Arc -> keine Kapazitäts-NB nötig
             continue
-
-        # **Fix**: x[a, key] statt x[key]
-        # (Optional) Safety-Guard, hilft beim Debuggen:
-        # for key in keys:
-        #     if (r, key) not in x:
-        #         raise KeyError(f"x hat Key (a={r}, key={key}) nicht. Beispiel-Key in x: {next(iter(x.keys()))!r}")
 
         flow_sum = gp.quicksum(x[r, key] for key in keys)
 
-        ks = ga_to_ks.get((g, a), [])
-        avail = gp.quicksum(y[g, k] for k in ks) if ks else gp.LinExpr(0.0)
+        m.addConstr(
+            flow_sum <= Q * f_expr[ell] * y_line[ell, k_r],
+            name=f"{name}[r{r}]"
+        )
 
-        m.addConstr(flow_sum <= Q * f_expr[ell] * avail, name=f"{name}[r{r}]")
 
-def add_infrastructure_capacity_with_candidates(
-    m: gp.Model, model, f_expr: Dict[int, gp.LinExpr],
-    y: Dict[Tuple[int,int], gp.Var], candidates_s: Dict[int, List[Dict]],
-    cap_per_arc, name="infra_cap"
+def add_infrastructure_capacity_with_candidates_per_line(
+    m, model, f_expr, y_line, cand_by_line, cap_per_arc, name="infra_cap"
 ):
-    """
-    Je infra-Arc a:
-      Sum_{Gruppen g} Sum_{Linien ell∈g} Sum_{k} f_ell * y[g,k] * I[a∈cand(g,k)]  ≤  cap[a]
-    """
-    # Linien je Gruppe
-    lines_by_group: Dict[int, List[int]] = {}
-    for g, (fwd, bwd) in model.line_group_to_lines.items():
-        lines_by_group[g] = [ell for ell in (fwd, bwd) if ell is not None and ell >= 0]
-
-    # Inzidenz (g,a) -> [k...]
-    ga_to_ks: Dict[Tuple[int,int], List[int]] = {}
-    for g, cand_list in candidates_s.items():
-        for k, cand in enumerate(cand_list):
+    # Precompute: für jeden infra-Arc a -> Liste von (ell,k), deren Kandidat a enthält
+    A = int(model.E_dir)
+    cover = [[] for _ in range(A)]
+    for ell, cand_list in (cand_by_line or {}).items():
+        for k, cand in enumerate(cand_list or []):
             for a in cand.get("arcs", []):
-                ga_to_ks.setdefault((g, int(a)), []).append(k)
+                cover[int(a)].append((ell, k))
 
-    E = int(model.E_dir)
-    for a in range(E):
-        # Sum über Gruppen/Linien/Kandidaten
-        terms = []
-        for g, Lg in lines_by_group.items():
-            ks = ga_to_ks.get((g, a), [])
-            if not ks:
-                continue
-            ysum = gp.quicksum(y[g, k] for k in ks)
-            for ell in Lg:
-                terms.append(f_expr[ell] * ysum)
-        if not terms:
+    for a in range(A):
+        if not cover[a]:
             continue
-        m.addConstr(gp.quicksum(terms) <= float(cap_per_arc[a]), name=f"{name}[a{a}]")
+        m.addConstr(
+            gp.quicksum(f_expr[ell] * y_line[ell, k] for (ell, k) in cover[a]) <= float(cap_per_arc[a]),
+            name=f"{name}[a{a}]"
+        )
 
-def add_path_replanning_cost(
-    m: gp.Model, model,
-    y: Dict[Tuple[int,int], gp.Var],
-    candidates_s: Dict[int, List[Dict]],
-    f_expr: Dict[int, gp.LinExpr],
-    cost_repl_line: float
-):
-    """
-    Kosten_s(Pfad) = Sum_g  ( Sum_k y[g,k] * (add_len+rem_len)_gk ) * F_g
-    F_g = Frequenz der Gruppe (wir verwenden den repräsentativen ell).
-    Falls beide Richtungen separat als Linien angelegt sind, ist F_g = f_{ell_rep}.
-    """
-    # Repräsentative Linie je Gruppe
-    rep = {}
-    for g, (fwd, bwd) in model.line_group_to_lines.items():
-        rep[g] = fwd if fwd is not None and fwd >= 0 else (bwd if bwd is not None and bwd >= 0 else None)
 
+def add_path_replanning_cost_per_line(m, model, y_line, cand_by_line, f_expr, cost_repl_line):
     terms = []
-    for g, cand_list in candidates_s.items():
-        ell_rep = rep.get(g, None)
-        if ell_rep is None or not cand_list:
-            continue
-        Fg = f_expr[ell_rep]               # Frequenz der Gruppe im Szenario
+    for ell, cand_list in cand_by_line.items():
         for k, cand in enumerate(cand_list):
-            delta_len_nom = float(cand.get("add_len_nom", 0.0) + cand.get("rem_len_nom", 0.0))
-            if delta_len_nom == 0.0:
+            delta_abs = float(cand.get("add_len", 0.0) + cand.get("rem_len", 0.0))
+            if delta_abs == 0.0: 
                 continue
-            terms.append(cost_repl_line * delta_len_nom * y[g, k] * Fg)
+            terms.append( cost_repl_line * delta_abs * y_line[ell, k] * f_expr[ell] )
     return gp.quicksum(terms) if terms else gp.LinExpr(0.0)
+
 
 def build_obj_operating(
     data,
@@ -575,7 +496,99 @@ def build_obj_operating(
     oper_expr = gp.quicksum(f_expr[ell] * line_len[ell] for ell in range(data.L))
     return oper_expr, line_len
 
+def build_obj_operating_with_candidates_per_line(
+    model,
+    f_expr: Dict[int, gp.LinExpr],
+    y_line: Dict[tuple, gp.Var],                 # y_line[(ell,k)]
+    candidates_per_line: Dict[int, List[Dict]],  # {ell: [ {len: ...}, ... ]}
+):
+    """
+    Betriebskosten mit Kandidatenpfaden (per Linie):
+      Sum_ell f_ell * ( Sum_k y_{ell,k} * len_{ell,k} )
+    """
+    terms = []
+    for ell, cand_list in (candidates_per_line or {}).items():
+        if not cand_list:
+            continue
+        len_expr = gp.quicksum(float(c.get("len", 0.0)) * y_line[ell, k]
+                               for k, c in enumerate(cand_list)
+                               if (ell, k) in y_line)
+        terms.append(f_expr[ell] * len_expr)
+    return gp.quicksum(terms)
 
+
+
+def add_path_replanning_cost_linear_per_line(
+    m: gp.Model,
+    model,
+    y: Dict[tuple, gp.Var],                   # y[(ell,k)] ∈ {0,1}
+    candidates_per_line: Dict[int, List[Dict]],  # {ell: [ {arcs,len,add_len,rem_len,delta_len_nom?}, ... ]}
+    f_expr: Dict[int, gp.LinExpr],            # ***Szenario***-Frequenz je Linie ℓ
+    cost_repl_line: float,
+    freq_vals: List[int] | None = None,
+    *,
+    name: str = "repl_path_line",
+):
+    """
+    Path-Penalty in EINEM Szenario s (pro Linie):
+      Sum_{ell,k} cost_repl_line * (add_len + rem_len)_{ell,k} * (y_{ell,k} * f_ell(s))
+
+    - (add_len + rem_len) ist absoluter Umbau (entfernte + hinzugefügte Kantenlängen),
+      immer relativ zum NOMINALPFAD DIESER LINIE ℓ.
+    - f_ell(s) ist die ***Szenario***-Frequenz dieser Linie.
+    - y_{ell,k} wählt genau einen Kandidaten pro Linie (oder 0, falls Linie aus).
+    - Das Produkt y * f wird via McCormick linearisiert.
+
+    Rückgabe: LinExpr (Summe der Path-Replanning-Kosten in diesem Szenario).
+    """
+    # obere Schranke für Frequenzen
+    Fmax = 0.0
+    if freq_vals and hasattr(freq_vals, "__iter__"):
+        try:
+            Fmax = float(max(freq_vals))   # sicher aus Liste/Tuple/np.array
+        except Exception:
+            pass
+    if Fmax <= 0.0:
+        # Fallback: benutze max_frequency aus dem Model, wenn vorhanden
+        mf = getattr(model, "config", {}).get("max_frequency", None) if hasattr(model, "config") else None
+        try:
+            Fmax = float(mf) if mf is not None else 10.0
+        except Exception:
+            Fmax = 10.0
+
+    terms = []
+    for ell, cand_list in (candidates_per_line or {}).items():
+        if not cand_list:
+            continue
+        # Szenario-Frequenz dieser Linie
+        if ell not in f_expr:
+            # Linie existiert im Szenario nicht (oder wurde entkoppelt) -> nichts addieren
+            continue
+        Fell = f_expr[ell]
+
+        for k, cand in enumerate(cand_list):
+            # Delta-Länge (immer nominal vs. Kandidat). Bevorzugt explizit, sonst add+rem.
+            delta_len = float(
+                cand.get("delta_len_nom",
+                         float(cand.get("add_len", 0.0)) + float(cand.get("rem_len", 0.0)))
+            )
+            if delta_len <= 0.0:
+                continue
+
+            y_ellk = y.get((ell, k))
+            if y_ellk is None:
+                # für Sicherheit: überspringen, falls diese Kombination nicht modelliert wurde
+                continue
+
+            # McCormick-Linearisation von w ≈ Fell * y_ellk
+            w = m.addVar(lb=0.0, ub=Fmax, name=f"{name}_w[l{ell},k{k}]")
+            m.addConstr(w <= Fmax * y_ellk,               name=f"{name}_w_le_Fy[l{ell},k{k}]")
+            m.addConstr(w <= Fell,                        name=f"{name}_w_le_F[l{ell},k{k}]")
+            m.addConstr(w >= Fell - Fmax * (1 - y_ellk),  name=f"{name}_w_ge_F_Fy[l{ell},k{k}]")
+
+            terms.append(cost_repl_line * delta_len * w)
+
+    return gp.quicksum(terms) if terms else gp.LinExpr(0.0)
 
 # ----------------------------- Zielfunktion -----------------------------
 

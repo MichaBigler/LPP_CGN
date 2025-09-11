@@ -68,7 +68,34 @@ class Config:
 
     def to_dict(self) -> dict:
         return asdict(self)
-    
+
+@dataclass
+class CandidateConfig:
+    # Mengensteuerung
+    k_loc_detour: int = 3
+    k_sp_global: int = 8
+    max_candidates_per_line: int = 20
+    div_min_edges: int = 1
+
+    # Kosten-Gewichte für Ranking (None => aus Haupt-Config spiegeln)
+    w_len: Optional[float] = None
+    w_repl: Optional[float] = None
+
+    # Korridor (zulässige Längenausweitung ggü. Referenz)
+    corr_eps: float = 0.25
+
+    # wann generieren & Richtungsspiegelung
+    generate_only_if_disrupted: bool = True
+    mirror_backward: str = "auto"   # "auto" | "force" | "off"
+
+    def resolve_weights(self, main_cfg: Config) -> Tuple[float, float]:
+        """Gewichte auflösen (falls None → aus main config spiegeln)."""
+        w_len = self.w_len if self.w_len is not None else float(main_cfg.line_operation_cost_mult)
+        w_repl = self.w_repl if self.w_repl is not None else float(main_cfg.cost_repl_line)
+        return float(w_len), float(w_repl)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 @dataclass
 class ModelData:

@@ -144,19 +144,22 @@ def main():
                 # breite Frequenz-CSV inkl. Nominal-Kosten
                 logger.write_freqs_two_stage(
                     i, model,
-                    nominal=solution.get("chosen_freq_stage1", {}),
-                    scenarios=solution.get("scenarios", []),
-                    nominal_costs=solution.get("costs_0", {})
+                    nominal=solution.get("chosen_freq_stage1", {}) or {},
+                    scenarios=solution.get("scenarios", []) or [],
+                    nominal_costs=solution.get("costs_0"),
+                    cand_selected=artifacts.get("cand_selected"),   # {s: {g: k}}
+                    cand_all=artifacts.get("candidates")            # {s: {g: [{'arcs':...,'len':...}, ...]}}
                 )
 
-                cand_all = artifacts.get("candidates", {})
-                cand_selected = artifacts.get("cand_selected", None)
+                candidates_lines = artifacts.get("candidates_lines") or artifacts.get("candidates")
+                selected_lines   = artifacts.get("cand_selected_lines") or artifacts.get("cand_selected")
                 c_repl_line = float(domain.config.get("cost_repl_line", 0.0))
-                if cand_all:
-                    logger.write_candidates(
-                        i, model, cand_all,
+
+                if candidates_lines:
+                    logger.write_candidates_per_line(
+                        i, model, candidates_lines,
                         c_repl_line=c_repl_line,
-                        selected=cand_selected,   # NEU
+                        selected=selected_lines,
                     )
 
             print(f"Status={_status_name(solution.get('status'))}  Obj={solution.get('objective')}  "

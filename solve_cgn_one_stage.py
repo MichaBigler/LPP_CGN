@@ -2,13 +2,13 @@
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
-from cgn import make_cgn
+from prepare_cgn import make_cgn
 from optimisation import (
     add_passenger_capacity, add_infrastructure_capacity,
     build_obj_invehicle, build_obj_waiting, build_obj_operating, set_objective,
     add_frequency_grouped,
 )
-from solve_cgn_util import (
+from solve_utils import (
     _freq_values_from_config, _routing_is_aggregated,
     _waiting_mode, _add_flows
 )
