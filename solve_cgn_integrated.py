@@ -22,7 +22,34 @@ from solve_utils import (
     _waiting_mode, _line_lengths, _group_lengths, _rep_line_of_group, _add_flows
 )
 
+def _debug_print_candidates_lines(cand_all_lines: dict[int, dict[int, list[dict]]],
+                                  *, max_lines: int = 3, max_examples: int = 2) -> None:
+    """Knackige Übersicht pro Szenario / Linie."""
+    for s, per_line in cand_all_lines.items():
+        total = sum(len(lst or []) for lst in per_line.values())
+        empties = [ell for ell, lst in per_line.items() if not lst]
+        print(f"[cands] s={s}: total_cands={total}, empty_lines={len(empties)}"
+              + (f" -> {empties[:max_lines]}" if empties else ""))
 
+        shown = 0
+        for ell, lst in per_line.items():
+            if not lst:
+                continue
+            print(f"  line {ell}: {len(lst)} candidates", end="")
+            # Beispiele
+            ex = []
+            for k, c in enumerate(lst[:max_examples]):
+                kind = c.get("kind", "?")
+                L = c.get("len", 0.0)
+                d = c.get("delta_len_nom", c.get("add_len", 0.0) + c.get("rem_len", 0.0))
+                ex.append(f"k={k}:{kind}, len={L:.2f}, Δ={d:.2f}")
+            if ex:
+                print(" | " + "  ".join(ex))
+            else:
+                print()
+            shown += 1
+            if shown >= max_lines:
+                break
 
 
 # ---------- TWO-STAGE INTEGRATED (joint) ----------
@@ -47,7 +74,8 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
         cand_cfg = CandidateConfig()  # Fallback-Defaults
 
     cand_all_lines = build_candidates_all_scenarios_per_line_cfg(model, cand_cfg, domain.config)
-
+    _debug_print_candidates_lines(cand_all_lines, max_lines=4, max_examples=2)
+    
     # Nominal-CGN (Stage 1)
     cgn = make_cgn(model)
     freq_vals = _freq_values_from_config(domain)

@@ -1,3 +1,2 @@
 source;network;scenario_line_data;procedure;optimize_lines;routing_agg;eliminate_subtours;line_repl_allowed;waiting_time_frequency;gap;travel_time_cost_mult;waiting_time_cost_mult;line_operation_cost_mult;num_od;train_capacity;infrastructure_capacity;max_frequency;num_scenarios;cost_repl_freq;cost_repl_line;repl_budget;cand_detour_count;cand_ksp_count
-lintim;SiouxFalls;SiouxFalls;separated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;2;50;10;50;12;8;2;100;500;-5;2;2
-lintim;SiouxFalls;SiouxFalls;integrated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;2;50;10;50;12;8;2;100;500;-5;2;2
+lintim;Cross;Cross;integrated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;2;50;10;50;12;8;2;100;500;-5;2;2

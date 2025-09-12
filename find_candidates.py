@@ -79,31 +79,22 @@ def allowed_arcs_forward(model, s: int) -> Set[int]:
 # --------------------------- Graph Views & Shortest Path ---------------------------
 
 def _adj_directed_weighted(model, allowed: Set[int], rev: List[Optional[int]], weight_fn):
-    """
-    Gerichtete Sicht mit richtungs-spezifischen Gewichten.
-    adj[u] enthält Tupel (v, a_fwd, a_bwd, w_uv) für Kante u->v.
-    """
-    tail, head = _arc_endpoints(model)
+    tails, heads = _arc_endpoints(model)
     adj: Dict[int, List[Tuple[int, int, Optional[int], float]]] = {}
-    seen_undirected = set()
+
     for a in allowed:
-        u, v = tail[a], head[a]
-        key = (min(u, v), max(u, v))
-        if key in seen_undirected:
-            continue
-        seen_undirected.add(key)
+        u, v = tails[a], heads[a]
 
-        ab = rev[a] if (rev[a] is not None and rev[a] in allowed) else None
-
-        # u -> v
+        # u -> v (immer, weil a erlaubt)
         w_uv = float(weight_fn(a))
+        ab = rev[a] if (rev[a] is not None and rev[a] in allowed) else None
         adj.setdefault(u, []).append((v, a, ab, w_uv))
 
-        # v -> u (falls Rückbogen; sonst fallback: gleicher a, aber in Gegenrichtung)
-        a_back = ab if ab is not None else a
-        w_vu = float(weight_fn(a_back))
-        # In diesem Eintrag ist a_fwd = a_back (v->u), a_bwd = a (u->v)
-        adj.setdefault(v, []).append((u, a_back, a, w_vu))
+        # v -> u nur, wenn echte Gegenrichtung vorhanden und erlaubt
+        if ab is not None:
+            w_vu = float(weight_fn(ab))
+            adj.setdefault(v, []).append((u, ab, a, w_vu))
+
     return adj
 
 
@@ -262,108 +253,139 @@ def candidates_for_line_scenario(
     ksp_count: int,
     rev: List[Optional[int]],
     *,
-    # KSP-Gewicht:
     ksp_weight_mode: str = "length",
     w_len: float = 1.0,
     w_repl: float = 0.0,
     gamma_ksp: Optional[float] = None,
-    # Policies:
     only_when_blocked: bool = False,
     min_edge_diff: int = 1,
     max_candidates_per_line: Optional[int] = None,
-    corr_eps: Optional[float] = None,   # <— NEU
+    corr_eps: Optional[float] = None,
 ) -> List[Dict]:
-    """
-    Erzeugt Kandidatenliste für Linie ℓ in Szenario s.
+    def _dbg(msg: str):
+        print(msg)
 
-    Rückgabe-Einträge enthalten:
-      {
-        "arcs": [a0,a1,...],
-        "len": float,
-        "add_len": float,
-        "rem_len": float,
-        "delta_len_nom": float,  # = add_len + rem_len
-        "kind": "nominal"|"base"|"detour"|"ksp"|"alt",
-        "is_nominal": bool,
-        "is_base": bool,
-      }
-    """
+    _dbg(f"[cand] s={s} ell={ell} FLAGS: only_when_blocked={only_when_blocked}, "
+         f"detour_count={detour_count}, ksp_count={ksp_count}, "
+         f"min_edge_diff={min_edge_diff}, max_cands={max_candidates_per_line}, "
+         f"ksp_weight_mode={ksp_weight_mode}, w_len={w_len}, w_repl={w_repl}, gamma_ksp={gamma_ksp}")
+
     allowed = allowed_arcs_forward(model, s)
     src, dst, nominal = _line_endpoints(model, ell)
     nominal_ok = all(a in allowed for a in nominal)
+    bad = [int(a) for a in nominal if a not in allowed]
+
+    _dbg(f"[cand] s={s} ell={ell}: |allowed|={len(allowed)} "
+         f"nominal_len={len(nominal)} nominal_ok={nominal_ok} src={src} dst={dst}")
+    _dbg(f"[cand] s={s} ell={ell}: nominal has {len(bad)} blocked arcs (example {bad[:5]})")
+
     nominal_set = set(nominal)
 
-    # Gewichtsfunktion für KSP/Detour-Suche
+    # Gewichtsfunktion
     if ksp_weight_mode.lower() == "composite":
         gamma = float(w_repl if gamma_ksp is None else gamma_ksp)
         def weight_fn(a: int) -> float:
             L = _arc_length(model, a)
-            pen = gamma if a not in nominal_set else 0.0
-            return w_len * L + pen * L
+            return w_len * L + (gamma if a not in nominal_set else 0.0) * L
     else:
         def weight_fn(a: int) -> float:
             return w_len * _arc_length(model, a)
 
-    # gerichtete, gewichtete Sicht
+    # gerichtete Sicht
     adj = _adj_directed_weighted(model, allowed, rev, weight_fn)
+    edge_cnt = sum(len(nbrs) for nbrs in adj.values())
+    _dbg(f"[cand] s={s} ell={ell}: |adj_nodes|={len(adj)} |adj_edges|={edge_cnt}")
 
-    # Referenzpfade
+    # Referenzen
     base = _shortest_path(model, adj, src, dst)
     if not base:
+        _dbg(f"[cand] s={s} ell={ell}: shortest_path failed (no path).")
+        if nominal_ok and nominal:
+            _dbg(f"[cand] s={s} ell={ell}: return nominal-only fallback.")
+            return [{
+                "arcs": nominal,
+                "len": sum(_arc_length(model,a) for a in nominal),
+                "add_len": 0.0, "rem_len": 0.0, "delta_len_nom": 0.0,
+                "kind": "nominal", "is_nominal": True, "is_base": False
+            }]
         return []
 
     seed = nominal if nominal_ok else base
 
-    # Falls Alternativen nur bei Blockade:
-    if only_when_blocked and nominal_ok:
-        pool = [nominal]
-    else:
-        pool: List[List[int]] = [seed]
+    # --- Pool aufbauen (nominal immer rein, wenn zulässig) ---
+    pool: List[List[int]] = []
+    if nominal_ok and nominal:
+        pool.append(nominal)
+
+    # base IMMER hinzufügen, wenn existent und verschieden
+    if base and (not nominal_ok or base != nominal):
+        pool.append(base)
+
+    # Alternativen nur dann unterdrücken, wenn ausdrücklich gewünscht
+    if not (only_when_blocked and nominal_ok):
         if detour_count > 0:
-            pool += _detour_candidates(model, adj, seed, detour_count)
+            dets = _detour_candidates(model, adj, seed, detour_count)
+            _dbg(f"[cand] s={s} ell={ell}: detours made: {len(dets)}")
+            pool += dets
         if ksp_count > 0:
-            pool += [p for p in _yen_ksp(model, adj, src, dst, ksp_count) if p and p != seed]
-        pool = _unique_paths(pool)
-        # nominal nach vorne heben, wenn zulässig
-        if nominal_ok:
-            for i, p in enumerate(pool):
-                if p == nominal and i != 0:
-                    pool.insert(0, pool.pop(i))
-                    break
-    def plen(p): return sum(_arc_length(model, a) for a in p)
+            ksps = [p for p in _yen_ksp(model, adj, src, dst, ksp_count) if p and p != seed]
+            _dbg(f"[cand] s={s} ell={ell}: ksp made: {len(ksps)}")
+            pool += ksps
+
+    before = len(pool)
+    pool = _unique_paths(pool)
+    _dbg(f"[cand] s={s} ell={ell}: pool unique: {before} -> {len(pool)}")
+
+    if not pool:
+        pool = [base]
 
     if nominal_ok:
-        ref_path = nominal
-    else:
-        ref_path = base if base else []
+        for i, p in enumerate(pool):
+            if p == nominal and i != 0:
+                pool.insert(0, pool.pop(i))
+                break
+
+    _dbg(f"[cand] s={s} ell={ell}: pool_size={len(pool)} sample={(pool[0][:3] if pool else [])}")
+
+    def plen(p): return sum(_arc_length(model, a) for a in p)
+
+    ref_path = nominal if nominal_ok else (base if base else [])
     L_ref = plen(ref_path) if ref_path else float("inf")
 
     def within_corr(p: List[int]) -> bool:
-        if corr_eps is None:
-            return True
-        return plen(p) <= (1.0 + float(corr_eps)) * L_ref
-    
+        return True if corr_eps is None else (plen(p) <= (1.0 + float(corr_eps)) * L_ref)
 
-    # Diversität und Max-Limit anwenden
+    # --- EINZIGE Filterrunde: Korridor + Diversität + Limit ---
     filtered: List[List[int]] = []
     for p in pool:
-        if not within_corr(p):
-            continue
-        if _edge_diversity_ok(p, filtered, min_edge_diff):
+        if within_corr(p) and _edge_diversity_ok(p, filtered, min_edge_diff):
             filtered.append(p)
+        else:
+            _dbg(f"[cand] s={s} ell={ell}: drop by "
+                 f"{'corridor' if not within_corr(p) else 'diversity'}")
         if max_candidates_per_line is not None and len(filtered) >= int(max_candidates_per_line):
+            _dbg(f"[cand] s={s} ell={ell}: hit max_candidates_per_line={max_candidates_per_line}")
             break
-    # Labels vorbereiten
-    detour_set = set(map(tuple, _detour_candidates(model, adj, seed, max(0, detour_count)))) if detour_count > 0 else set()
-    ksp_set    = set(map(tuple, _yen_ksp(model, adj, src, dst, max(0, ksp_count)))) if ksp_count > 0 else set()
 
-    def plen(p): return sum(_arc_length(model, a) for a in p)
+    if not filtered:
+        filtered = [nominal] if nominal_ok else [base]
 
-    # Kosten ggü. NOMINAL (immer)
-    ref_set = nominal_set
+    _dbg(f"[cand] s={s} ell={ell}: filtered_size={len(filtered)}")
+
+    # Label-Sets (nur wenn Alternativen gesucht wurden)
+    detour_set = set()
+    ksp_set = set()
+    if not (only_when_blocked and nominal_ok):
+        if detour_count > 0:
+            detour_set = set(map(tuple, _detour_candidates(model, adj, seed, max(0, detour_count))))
+        if ksp_count > 0:
+            ksp_set = set(map(tuple, _yen_ksp(model, adj, src, dst, max(0, ksp_count))))
+
+    # Ausgabestruktur
     out: List[Dict] = []
+    ref_set = nominal_set
     for p in filtered:
-        pset = set(p)
+        pset   = set(p)
         add_len = sum(_arc_length(model, a) for a in (pset - ref_set))
         rem_len = sum(_arc_length(model, a) for a in (ref_set - pset))
         delta   = add_len + rem_len
@@ -390,6 +412,9 @@ def candidates_for_line_scenario(
             "is_base": is_base,
         })
 
+    _dbg(f"[cand] s={s} ell={ell}: produced {len(out)} cands "
+         f"(pool={len(pool)}, filtered={len(filtered)}) "
+         f"kinds={[c.get('kind','?') for c in out]}")
     return out
 
 
@@ -539,16 +564,13 @@ def build_candidates_all_scenarios_per_line(
                 )
 
         results[int(s)] = per_line
+        total = sum(len(v) for v in per_line.values())
+        empties = [ell for ell, L in per_line.items() if not L]
+        print(f"[cands] s={s}: total_cands={total}, empty_lines={len(empties)} -> {empties[:10]}")
 
     return results
 
 def build_candidates_all_scenarios_per_line_cfg(model, cand_cfg, main_cfg):
-    """
-    Bequemer Wrapper: nimmt CandidateConfig + main_cfg (dict oder Config-Objekt),
-    löst Gewichte auf und ruft die bestehende build_candidates_all_scenarios_per_line
-    mit den richtigen, 'flachen' Parametern auf.
-    """
-    # main_cfg kann dict oder dataclass sein:
     def _get(cfg, key, default):
         try:
             return getattr(cfg, key)
@@ -557,6 +579,8 @@ def build_candidates_all_scenarios_per_line_cfg(model, cand_cfg, main_cfg):
 
     w_len  = cand_cfg.w_len  if cand_cfg.w_len  is not None else float(_get(main_cfg, "line_operation_cost_mult", 1.0))
     w_repl = cand_cfg.w_repl if cand_cfg.w_repl is not None else float(_get(main_cfg, "cost_repl_line", 0.0))
+
+    corr = None if getattr(cand_cfg, "corr_eps", None) is None else float(cand_cfg.corr_eps)
 
     return build_candidates_all_scenarios_per_line(
         model,
@@ -570,5 +594,5 @@ def build_candidates_all_scenarios_per_line_cfg(model, cand_cfg, main_cfg):
         min_edge_diff=int(cand_cfg.div_min_edges),
         max_candidates_per_line=int(cand_cfg.max_candidates_per_line),
         mirror_backward=(str(cand_cfg.mirror_backward).lower() != "off"),
-        corr_eps=float(cand_cfg.corr_eps),
+        corr_eps=corr,   # <-- robust
     )

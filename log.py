@@ -292,8 +292,6 @@ class RunBatchLogger:
                         "delta_len_vs_nom": delta_len,
                         "unit_repl_cost_per_freq": unit_cost,
                         "selected": 1 if sel_k == k else 0,
-                        "is_nominal": int(is_nominal),
-                        "is_base": int(is_base),
                     })
 
         df = pd.DataFrame(rows, columns=[
