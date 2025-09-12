@@ -152,20 +152,22 @@ def main():
                     nominal=solution.get("chosen_freq_stage1", {}) or {},
                     scenarios=solution.get("scenarios", []) or [],
                     nominal_costs=solution.get("costs_0"),
-                    cand_selected=artifacts.get("cand_selected"),   # {s: {g: k}}
-                    cand_all=artifacts.get("candidates")            # {s: {g: [{'arcs':...,'len':...}, ...]}}
+                    cand_selected=artifacts.get("cand_selected") or artifacts.get("cand_selected_lines"),
+                    cand_all=artifacts.get("candidates") or artifacts.get("candidates_lines"),
                 )
+                cand_per_s  = artifacts.get("candidates") or artifacts.get("candidates_lines") or {}
+                sel_per_s   = artifacts.get("cand_selected") or artifacts.get("cand_selected_lines") or {}
+                freqs_per_s = solution.get("chosen_freq_stage2") or []
 
-                candidates_lines = artifacts.get("candidates_lines") or artifacts.get("candidates")
-                selected_lines   = artifacts.get("cand_selected_lines") or artifacts.get("cand_selected")
-                c_repl_line = float(domain.config.get("cost_repl_line", 0.0))
-
-                if candidates_lines:
-                    logger.write_candidates_per_line(
-                        i, model, candidates_lines,
-                        c_repl_line=c_repl_line,
-                        selected=selected_lines,
-                    )
+                logger.write_candidates(
+                    i,                          # run_id (positional)
+                    model,                      # model   (positional)
+                    candidates_per_s=cand_per_s,  # <-- als Keyword!
+                    out_csv=os.path.join(logger.out_dir, f"candidates_run{i}.csv"),
+                    c_repl_line=float(domain.config.get("cost_repl_line", 0.0)),
+                    selected=sel_per_s,
+                    freqs_per_s=freqs_per_s,
+                )
 
             print(f"Status={_status_name(solution.get('status'))}  Obj={solution.get('objective')}  "
                 f"Stage1={base_row.get('obj_stage1')}  Stage2_exp={base_row.get('obj_stage2_exp')}  "

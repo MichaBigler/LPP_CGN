@@ -11,9 +11,9 @@ All CSVs use ';' as separator to match config.csv.
 from __future__ import annotations
 import os
 from datetime import datetime
-from typing import Dict, Any, Iterable
+from typing import Dict, Any, Iterable, List, Optional
 import pandas as pd
-
+import csv
 
 BASE_EXTRA_COLS = [
     "status_code","status","objective","runtime_s",
@@ -22,6 +22,16 @@ BASE_EXTRA_COLS = [
     "repl_cost_freq_exp","repl_cost_path_exp","repl_cost_exp",
 ]
 
+def _arc_seq_to_nodes_and_arcs(model, arc_seq: List[int]) -> tuple[str, str, Optional[int], Optional[int]]:
+        """Erzeuge (nodes_str, arcs_str, start_id, end_id) aus einer Arc-Sequenz."""
+        if not arc_seq:
+            return "", "", None, None
+        # Original Stop-IDs aus dem Datensatz (nicht die indexbasierten)
+        uv_pairs = [model.idx_to_arc_uv[a] for a in arc_seq]  # [(u_id, v_id), ...]
+        node_ids = [uv_pairs[0][0]] + [v for (_, v) in uv_pairs]
+        nodes_str = ",".join(str(n) for n in node_ids)
+        arcs_str  = ";".join(f"{u}->{v}" for (u, v) in uv_pairs)
+        return nodes_str, arcs_str, node_ids[0], node_ids[-1]
 
 class RunBatchLogger:
     """Handles creation of output dir and per-run logging."""
@@ -47,6 +57,8 @@ class RunBatchLogger:
         for k in BASE_EXTRA_COLS:
             base[k] = None
         return base
+    
+    
 
     def append_base_row(self, row_dict: Dict[str, Any]) -> None:
         """Appends a single line to base_log.csv (flushes immediately)."""
@@ -122,17 +134,35 @@ class RunBatchLogger:
                 seq.append(int(v))
             return seq
 
-        def path_for_scenario_line(s: int, ell: int) -> list[int]:
-            """Gewählter Kandidatenpfad je Szenario/Gruppe; sonst nominal."""
+        def _get_selected_k(s_idx: int, ell: int) -> Optional[int]:
+            """Liefert gewählten Kandidatenindex k – akzeptiert per-Line ODER per-Group Keys."""
+            if not cand_selected:
+                return None
+            sel_s = cand_selected.get(s_idx, {})
+            if ell in sel_s:               # per-line key
+                return sel_s[ell]
             g = int(model.line_idx_to_group[ell])
-            if cand_selected and cand_all:
-                k = (cand_selected.get(s) or {}).get(g, None)
-                cand_list = (cand_all.get(s) or {}).get(g, None)
-                if k is not None and cand_list and 0 <= k < len(cand_list):
-                    arcs = list(map(int, cand_list[k].get("arcs", [])))
-                    nodes = nodes_from_arcs_ids(arcs)
-                    if nodes:  # nur wenn wir sinnvoll rekonstruieren konnten
-                        return nodes
+            return sel_s.get(g, None)      # per-group fallback
+
+        def _get_cand_list(s_idx: int, ell: int) -> List[Dict[str, Any]]:
+            """Liefert Kandidatenliste – akzeptiert per-Line ODER per-Group Keys."""
+            if not cand_all:
+                return []
+            per_s = cand_all.get(s_idx, {})
+            if ell in per_s:                # per-line key
+                return per_s.get(ell, [])
+            g = int(model.line_idx_to_group[ell])
+            return per_s.get(g, [])         # per-group fallback
+
+        def path_for_scenario_line(s_idx: int, ell: int) -> list[int]:
+            """Gewählter Kandidatenpfad je Szenario/Line; sonst nominal."""
+            k = _get_selected_k(s_idx, ell)
+            cand_list = _get_cand_list(s_idx, ell)
+            if k is not None and 0 <= k < len(cand_list):
+                arcs = list(map(int, cand_list[k].get("arcs", [])))
+                nodes = nodes_from_arcs_ids(arcs)
+                if nodes:
+                    return nodes
             # fallback
             return nominal_path_nodes_for_line(ell)
 
@@ -207,8 +237,7 @@ class RunBatchLogger:
                 sid = scen_ids[s_idx]
                 f = int((s.get("freq") or {}).get(ell, 0))
                 row[f"scenario {sid}_freq"] = f
-                # hier jetzt s_idx statt sid!
-                row[f"scenario {sid}_path"] = _fmt_nodes(path_for_scenario_line(int(s_idx), ell))
+                row[f"scenario {sid}_path"] = _fmt_nodes(path_for_scenario_line(s_idx, ell))
             freq_rows.append(row)
 
         df_freq = pd.DataFrame(freq_rows, columns=cols)
@@ -218,87 +247,52 @@ class RunBatchLogger:
         df_out.to_csv(path, sep=';', index=False)
         return path
     
-    def write_candidates_per_line(
+    def write_candidates(
         self,
-        run_index: int,
+        run_id: int,
         model,
-        cand_all_lines: dict,                 # {s: {ell: [cand, ...]}}
         *,
+        candidates_per_s: Dict[int, Dict[int, List[Dict[str, Any]]]],
+        out_csv: str = None,
         c_repl_line: float = 0.0,
-        selected: dict | None = None,         # {s: {ell: k}}
+        selected: Optional[Dict[int, Dict[int, int]]] = None,   # {s: {ell or group: k}}
+        freqs_per_s: Optional[List[Dict[int, int]]] = None,      # [ {ell: f}, ... ]
     ) -> str:
-        import pandas as pd, os
+        import csv, os
+        if out_csv is None:
+            out_csv = os.path.join("Results", f"candidates_run{run_id}.csv")
+            os.makedirs(os.path.dirname(out_csv), exist_ok=True)
 
-        idx_to_arc_uv = getattr(model, "idx_to_arc_uv")
+        with open(out_csv, "w", newline="", encoding="utf-8") as fh:
+            wr = csv.writer(fh, delimiter=";")   # ← Semikolon wie in den anderen Logs
+            wr.writerow([
+                "run","scenario","line","cand_id","kind",
+                "start_id","end_id","nodes","arcs",
+                "path_len","delta_len_vs_nom","unit_repl_cost_per_freq",
+                "selected","freq"  # ← NEU
+            ])
 
-        def nodes_from_arcs(arcs: list[int]) -> list[int]:
-            if not arcs:
-                return []
-            u0, _ = idx_to_arc_uv[int(arcs[0])]
-            seq = [int(u0)]
-            for a in arcs:
-                _, v = idx_to_arc_uv[int(a)]
-                seq.append(int(v))
-            return seq
+            for s, per_line in sorted(candidates_per_s.items()):
+                freq_by_line = (freqs_per_s[s] if freqs_per_s and s < len(freqs_per_s) else {}) or {}
+                sel_s = (selected.get(s, {}) if selected else {})
 
-        rows = []
-        for s, per_line in (cand_all_lines or {}).items():
-            chosen = (selected or {}).get(s, {})  # Dict[ell] -> k
-            for ell, cand_list in (per_line or {}).items():
-                sel_k = chosen.get(ell, None)
+                for ell, cand_list in sorted(per_line.items()):
+                    f_line = int(freq_by_line.get(ell, 0))  # Frequenz der Linie im Szenario s
+                    for k, cand in enumerate(cand_list or []):
+                        nodes_str, arcs_str, u0, v1 = _arc_seq_to_nodes_and_arcs(model, cand.get("arcs", []))
+                        path_len = float(cand.get("len", 0.0))
+                        delta    = float(cand.get("delta_len_nom", cand.get("add_len", 0.0) + cand.get("rem_len", 0.0)))
+                        kind     = str(cand.get("kind", ""))
+                        sel_flag = 1 if sel_s.get(ell, -1) == k else 0
+                        unit_cost = float(c_repl_line) * float(delta)
 
-                if not cand_list:
-                    # Optional: Dummy-Zeile, falls keine Kandidaten existieren
-                    rows.append({
-                        "run": int(run_index), "scenario": int(s), "line": int(ell),
-                        "cand_id": "", "kind": "none",
-                        "start_id": "", "end_id": "", "nodes": "", "arcs": "",
-                        "path_len": "", "delta_len_vs_nom": "", "unit_repl_cost_per_freq": "",
-                        "selected": 0, "is_nominal": "", "is_base": ""
-                    })
-                    continue
+                        # NUR der gewählte Kandidat bekommt die Frequenz, alle anderen 0
+                        f_row = f_line if sel_flag == 1 else 0
 
-                for k, cand in enumerate(cand_list):
-                    arcs = [int(a) for a in cand.get("arcs", [])]
-                    nodes = nodes_from_arcs(arcs)
-                    arcs_uv = ";".join(f"{u}->{v}" for (u, v) in (idx_to_arc_uv[a] for a in arcs))
-                    nodes_id = ",".join(map(str, nodes))
-
-                    path_len = float(cand.get("len", 0.0))
-                    delta_len = float(
-                        cand.get("delta_len_nom",
-                                float(cand.get("add_len", 0.0)) + float(cand.get("rem_len", 0.0)))
-                    )
-                    unit_cost = delta_len * float(c_repl_line)
-
-                    # Labels/Flags wenn vorhanden
-                    is_nominal = bool(cand.get("is_nominal", False))
-                    is_base    = bool(cand.get("is_base", False))
-                    gen        = str(cand.get("gen", ""))  # "detour" | "ksp" | "" (optional)
-                    kind = ("nominal" if is_nominal else
-                            ("base" if is_base else str(cand.get("kind", gen or "alt"))))
-
-                    rows.append({
-                        "run": int(run_index),
-                        "scenario": int(s),
-                        "line": int(ell),
-                        "cand_id": int(k),
-                        "kind": kind,
-                        "start_id": nodes[0] if nodes else "",
-                        "end_id": nodes[-1] if nodes else "",
-                        "nodes": nodes_id,
-                        "arcs": arcs_uv,
-                        "path_len": path_len,
-                        "delta_len_vs_nom": delta_len,
-                        "unit_repl_cost_per_freq": unit_cost,
-                        "selected": 1 if sel_k == k else 0,
-                    })
-
-        df = pd.DataFrame(rows, columns=[
-            "run","scenario","line","cand_id","kind","start_id","end_id",
-            "nodes","arcs","path_len","delta_len_vs_nom","unit_repl_cost_per_freq",
-            "selected","is_nominal","is_base"
-        ])
-        path = os.path.join(self.out_dir, f"candidates_run_{int(run_index):03d}.csv")
-        df.to_csv(path, sep=';', index=False)
-        return path
+                        wr.writerow([
+                            run_id, s, ell, k, kind,
+                            u0, v1, nodes_str, arcs_str,
+                            path_len, delta, unit_cost,
+                            sel_flag, f_row
+                        ])
+        return out_csv

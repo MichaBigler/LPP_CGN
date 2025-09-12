@@ -78,6 +78,7 @@ def allowed_arcs_forward(model, s: int) -> Set[int]:
 
 # --------------------------- Graph Views & Shortest Path ---------------------------
 
+
 def _adj_directed_weighted(model, allowed: Set[int], rev: List[Optional[int]], weight_fn):
     tails, heads = _arc_endpoints(model)
     adj: Dict[int, List[Tuple[int, int, Optional[int], float]]] = {}
@@ -85,17 +86,18 @@ def _adj_directed_weighted(model, allowed: Set[int], rev: List[Optional[int]], w
     for a in allowed:
         u, v = tails[a], heads[a]
 
-        # u -> v (immer, weil a erlaubt)
+        # u -> v (nur weil a erlaubt ist)
         w_uv = float(weight_fn(a))
         ab = rev[a] if (rev[a] is not None and rev[a] in allowed) else None
         adj.setdefault(u, []).append((v, a, ab, w_uv))
 
-        # v -> u nur, wenn echte Gegenrichtung vorhanden und erlaubt
+        # v -> u NUR wenn echte Gegenrichtung existiert und ebenfalls erlaubt
         if ab is not None:
             w_vu = float(weight_fn(ab))
             adj.setdefault(v, []).append((u, ab, a, w_vu))
 
     return adj
+
 
 
 def _shortest_path(model, adj, src: int, dst: int) -> Optional[List[int]]:
@@ -129,6 +131,20 @@ def _shortest_path(model, adj, src: int, dst: int) -> Optional[List[int]]:
     path.reverse()
     return path
 
+def _mk_nominal_candidate(model, ell):
+    arcs_nom = list(map(int, model.line_idx_to_arcs[ell]))
+    L_nom = sum(float(model.len_a[a]) for a in arcs_nom)
+    return {
+        "arcs": arcs_nom,
+        "len": L_nom,
+        "add_len": 0.0, "rem_len": 0.0, "delta_len_nom": 0.0,
+        "kind": "nominal", "is_nominal": True, "is_base": False
+    }
+
+def _nominal_ok(model, s, ell, allowed=None):
+    if allowed is None:
+        allowed = allowed_arcs_forward(model, s)
+    return all(int(a) in allowed for a in model.line_idx_to_arcs[ell])
 
 # --------------------------- Candidate Families ---------------------------
 
@@ -232,6 +248,17 @@ def _edge_diversity_ok(p: List[int], kept: List[List[int]], min_diff_edges: int)
             return False
     return True
 
+def _uniq_keep_order(cands):
+    seen = set()
+    out = []
+    for c in cands:
+        key = tuple(int(a) for a in c.get("arcs", []))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
 
 # --------------------------- Per-Line Candidate Builder ---------------------------
 
@@ -262,22 +289,15 @@ def candidates_for_line_scenario(
     max_candidates_per_line: Optional[int] = None,
     corr_eps: Optional[float] = None,
 ) -> List[Dict]:
-    def _dbg(msg: str):
-        print(msg)
+    
 
-    _dbg(f"[cand] s={s} ell={ell} FLAGS: only_when_blocked={only_when_blocked}, "
-         f"detour_count={detour_count}, ksp_count={ksp_count}, "
-         f"min_edge_diff={min_edge_diff}, max_cands={max_candidates_per_line}, "
-         f"ksp_weight_mode={ksp_weight_mode}, w_len={w_len}, w_repl={w_repl}, gamma_ksp={gamma_ksp}")
+    
 
     allowed = allowed_arcs_forward(model, s)
     src, dst, nominal = _line_endpoints(model, ell)
     nominal_ok = all(a in allowed for a in nominal)
     bad = [int(a) for a in nominal if a not in allowed]
 
-    _dbg(f"[cand] s={s} ell={ell}: |allowed|={len(allowed)} "
-         f"nominal_len={len(nominal)} nominal_ok={nominal_ok} src={src} dst={dst}")
-    _dbg(f"[cand] s={s} ell={ell}: nominal has {len(bad)} blocked arcs (example {bad[:5]})")
 
     nominal_set = set(nominal)
 
@@ -294,14 +314,14 @@ def candidates_for_line_scenario(
     # gerichtete Sicht
     adj = _adj_directed_weighted(model, allowed, rev, weight_fn)
     edge_cnt = sum(len(nbrs) for nbrs in adj.values())
-    _dbg(f"[cand] s={s} ell={ell}: |adj_nodes|={len(adj)} |adj_edges|={edge_cnt}")
+    
 
     # Referenzen
     base = _shortest_path(model, adj, src, dst)
     if not base:
-        _dbg(f"[cand] s={s} ell={ell}: shortest_path failed (no path).")
+     
         if nominal_ok and nominal:
-            _dbg(f"[cand] s={s} ell={ell}: return nominal-only fallback.")
+            
             return [{
                 "arcs": nominal,
                 "len": sum(_arc_length(model,a) for a in nominal),
@@ -325,16 +345,16 @@ def candidates_for_line_scenario(
     if not (only_when_blocked and nominal_ok):
         if detour_count > 0:
             dets = _detour_candidates(model, adj, seed, detour_count)
-            _dbg(f"[cand] s={s} ell={ell}: detours made: {len(dets)}")
+            
             pool += dets
         if ksp_count > 0:
             ksps = [p for p in _yen_ksp(model, adj, src, dst, ksp_count) if p and p != seed]
-            _dbg(f"[cand] s={s} ell={ell}: ksp made: {len(ksps)}")
+            
             pool += ksps
 
     before = len(pool)
     pool = _unique_paths(pool)
-    _dbg(f"[cand] s={s} ell={ell}: pool unique: {before} -> {len(pool)}")
+    
 
     if not pool:
         pool = [base]
@@ -345,7 +365,7 @@ def candidates_for_line_scenario(
                 pool.insert(0, pool.pop(i))
                 break
 
-    _dbg(f"[cand] s={s} ell={ell}: pool_size={len(pool)} sample={(pool[0][:3] if pool else [])}")
+    
 
     def plen(p): return sum(_arc_length(model, a) for a in p)
 
@@ -360,17 +380,12 @@ def candidates_for_line_scenario(
     for p in pool:
         if within_corr(p) and _edge_diversity_ok(p, filtered, min_edge_diff):
             filtered.append(p)
-        else:
-            _dbg(f"[cand] s={s} ell={ell}: drop by "
-                 f"{'corridor' if not within_corr(p) else 'diversity'}")
-        if max_candidates_per_line is not None and len(filtered) >= int(max_candidates_per_line):
-            _dbg(f"[cand] s={s} ell={ell}: hit max_candidates_per_line={max_candidates_per_line}")
-            break
+
 
     if not filtered:
         filtered = [nominal] if nominal_ok else [base]
 
-    _dbg(f"[cand] s={s} ell={ell}: filtered_size={len(filtered)}")
+    
 
     # Label-Sets (nur wenn Alternativen gesucht wurden)
     detour_set = set()
@@ -412,9 +427,7 @@ def candidates_for_line_scenario(
             "is_base": is_base,
         })
 
-    _dbg(f"[cand] s={s} ell={ell}: produced {len(out)} cands "
-         f"(pool={len(pool)}, filtered={len(filtered)}) "
-         f"kinds={[c.get('kind','?') for c in out]}")
+    
     return out
 
 
@@ -487,7 +500,7 @@ def build_candidates_all_scenarios_per_line(
     min_edge_diff: int = 1,
     max_candidates_per_line: Optional[int] = None,
     mirror_backward: bool = False,
-    corr_eps: Optional[float] = None,   # <— NEU
+    corr_eps: Optional[float] = None,
 ) -> Dict[int, Dict[int, List[Dict]]]:
     """
     Erzeugt candidates[s][ell] = Liste von Kandidaten für Linie ell im Szenario s.
@@ -498,26 +511,41 @@ def build_candidates_all_scenarios_per_line(
       - only_when_blocked: nur Alternativen erzeugen, wenn nominal im Szenario verletzt
       - min_edge_diff: Diversitäts-Schwelle (# unterschiedlicher Kanten)
       - max_candidates_per_line: Obergrenze je Linie
-      - mirror_backward: Kandidaten der Vorwärtslinie auf Rückwärtslinie spiegeln
+      - mirror_backward: Kandidaten der Vorwärtslinie auf Rückwärtslinie spiegeln und
+                         den nominalen BWD (falls zulässig) zusätzlich behalten
+      - corr_eps: Korridor (max. relative Längenzunahme ggü. Referenz)
     """
     rev = _rev_map(model)
     S   = len(model.p_s)
     results: Dict[int, Dict[int, List[Dict]]] = {}
 
-    # Optional: Gruppensicht für mirror_backward
+    def _uniq_keep_order(cands: List[Dict]) -> List[Dict]:
+        seen = set()
+        out: List[Dict] = []
+        for c in cands:
+            t = tuple(int(a) for a in c.get("arcs", []))
+            if t in seen:
+                continue
+            seen.add(t)
+            out.append(c)
+        return out
+
     groups = getattr(model, "line_group_to_lines", None)
 
     for s in range(S):
         per_line: Dict[int, List[Dict]] = {}
 
         if mirror_backward and isinstance(groups, dict):
-            # Erzeuge pro Gruppe: erst FWD, dann spiegeln auf BWD (falls vorhanden)
             for g, pair in groups.items():
                 ell_fwd, ell_bwd = pair
 
-                # FWD, wenn vorhanden
+                allowed = allowed_arcs_forward(model, s)
+
+                # 1) Beide Richtungen unabhängig generieren
+                cand_fwd_gen = []
+                cand_bwd_gen = []
                 if ell_fwd is not None and ell_fwd >= 0:
-                    cand_fwd = candidates_for_line_scenario(
+                    cand_fwd_gen = candidates_for_line_scenario(
                         model, s, int(ell_fwd),
                         detour_count, ksp_count, rev,
                         ksp_weight_mode=ksp_weight_mode,
@@ -525,21 +553,10 @@ def build_candidates_all_scenarios_per_line(
                         only_when_blocked=only_when_blocked,
                         min_edge_diff=min_edge_diff,
                         max_candidates_per_line=max_candidates_per_line,
-                        corr_eps=corr_eps,    
+                        corr_eps=corr_eps,
                     )
-                    per_line[int(ell_fwd)] = cand_fwd
-                else:
-                    cand_fwd = []
-
-                # BWD: spiegeln, wenn möglich; sonst normale Generierung
                 if ell_bwd is not None and ell_bwd >= 0:
-                    if cand_fwd:
-                        cand_bwd_mirror = _mirror_candidates_for_line(model, s, cand_fwd, rev, int(ell_bwd))
-                        if cand_bwd_mirror:
-                            per_line[int(ell_bwd)] = cand_bwd_mirror
-                            continue  # erfolgreich gespiegelt
-                    # Fallback: normale Generierung
-                    per_line[int(ell_bwd)] = candidates_for_line_scenario(
+                    cand_bwd_gen = candidates_for_line_scenario(
                         model, s, int(ell_bwd),
                         detour_count, ksp_count, rev,
                         ksp_weight_mode=ksp_weight_mode,
@@ -547,10 +564,39 @@ def build_candidates_all_scenarios_per_line(
                         only_when_blocked=only_when_blocked,
                         min_edge_diff=min_edge_diff,
                         max_candidates_per_line=max_candidates_per_line,
-                        corr_eps=corr_eps,    
+                        corr_eps=corr_eps,
                     )
+
+                # 2) Beidseitig spiegeln
+                cand_fwd_mir = []
+                cand_bwd_mir = []
+                if ell_fwd is not None and ell_fwd >= 0 and cand_bwd_gen:
+                    cand_fwd_mir = _mirror_candidates_for_line(model, s, cand_bwd_gen, rev, int(ell_fwd))
+                if ell_bwd is not None and ell_bwd >= 0 and cand_fwd_gen:
+                    cand_bwd_mir = _mirror_candidates_for_line(model, s, cand_fwd_gen, rev, int(ell_bwd))
+
+                # 3) Pro Richtung: nominal immer beibehalten, union + dedup + limit
+                if ell_fwd is not None and ell_fwd >= 0:
+                    out_fwd = []
+                    if _nominal_ok(model, s, int(ell_fwd), allowed):
+                        out_fwd.append(_mk_nominal_candidate(model, int(ell_fwd)))
+                    out_fwd += cand_fwd_mir + cand_fwd_gen
+                    out_fwd = _uniq_keep_order(out_fwd)
+                    if max_candidates_per_line is not None and len(out_fwd) > int(max_candidates_per_line):
+                        out_fwd = out_fwd[:int(max_candidates_per_line)]
+                    per_line[int(ell_fwd)] = out_fwd
+
+                if ell_bwd is not None and ell_bwd >= 0:
+                    out_bwd = []
+                    if _nominal_ok(model, s, int(ell_bwd), allowed):
+                        out_bwd.append(_mk_nominal_candidate(model, int(ell_bwd)))
+                    out_bwd += cand_bwd_mir + cand_bwd_gen
+                    out_bwd = _uniq_keep_order(out_bwd)
+                    if max_candidates_per_line is not None and len(out_bwd) > int(max_candidates_per_line):
+                        out_bwd = out_bwd[:int(max_candidates_per_line)]
+                    per_line[int(ell_bwd)] = out_bwd
         else:
-            # Unabhängig pro Linie
+            # Unabhängig je Linie
             for ell in range(model.L):
                 per_line[int(ell)] = candidates_for_line_scenario(
                     model, s, int(ell),
@@ -560,7 +606,7 @@ def build_candidates_all_scenarios_per_line(
                     only_when_blocked=only_when_blocked,
                     min_edge_diff=min_edge_diff,
                     max_candidates_per_line=max_candidates_per_line,
-                    corr_eps=corr_eps,    
+                    corr_eps=corr_eps,
                 )
 
         results[int(s)] = per_line
