@@ -1,4 +1,4 @@
-# solve_cgn.py
+# solve_cgn_integrated.py
 
 import os
 import numpy as np
