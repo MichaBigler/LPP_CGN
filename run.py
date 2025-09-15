@@ -1,3 +1,4 @@
+#run.py
 # -*- coding: utf-8 -*-
 """Run LPP-CGN optimisation row-by-row from Data/config.csv, logging via log.py."""
 
@@ -7,7 +8,7 @@ import traceback
 import pandas as pd
 
 from load_data import load_and_build
-from load_candidates_config import load_candidate_config
+from load_data import load_candidate_config
 from solve_cgn_one_stage import solve_one_stage
 from solve_cgn_separated import solve_two_stage_separated
 from solve_cgn_integrated import solve_two_stage_integrated
@@ -104,21 +105,19 @@ def main():
 
 
             if proc in ("one", "one_stage"):
-                
-                agg_time, agg_wait, agg_oper = _agg_components_two_stage(solution)
-
+                nom = (solution.get("costs_0") or {})
                 base_row.update({
                     "status": _status_name(solution.get("status")),
-                    "objective":     solution.get("objective"),
-                    "runtime_s":     solution.get("runtime_s"),
-                    "cost_time":     agg_time,
-                    "cost_wait":     agg_wait,
-                    "cost_oper":     agg_oper,
-                    "obj_stage1":    solution.get("obj_stage1"),
-                    "obj_stage2_exp": solution.get("obj_stage2_exp"),
-                    "repl_cost_freq_exp": solution.get("repl_cost_freq_exp"),
-                    "repl_cost_path_exp": solution.get("repl_cost_path_exp"),
-                    "repl_cost_exp":  solution.get("repl_cost_exp"),
+                    "objective": solution.get("objective"),
+                    "runtime_s": solution.get("runtime_s"),
+                    "cost_time": nom.get("time"),
+                    "cost_wait": nom.get("wait"),
+                    "cost_oper": nom.get("oper"),
+                    "obj_stage1": nom.get("objective"),
+                    "obj_stage2_exp": None,
+                    "repl_cost_freq_exp": None,
+                    "repl_cost_path_exp": None,
+                    "repl_cost_exp": None,
                 })
                 logger.write_freq_file(i, solution.get("chosen_freq") or artifacts.get("chosen_freq", {}))
             else:
@@ -189,7 +188,10 @@ def main():
 
         finally:
             # Sofort anhängen (Streaming-Log)
-            base_row.setdefault("status_code", solution.get("status_code") if 'solution' in locals() else -1)
+            if 'solution' in locals() and isinstance(solution, dict):
+                base_row["status_code"] = int(solution.get("status_code", -1))
+            else:
+                base_row["status_code"] = -1
             logger.append_base_row(base_row)
 
     print(f"\nBase log: {logger.base_log_path}")

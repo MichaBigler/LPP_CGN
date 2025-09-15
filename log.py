@@ -1,3 +1,4 @@
+#log.py
 # -*- coding: utf-8 -*-
 """Logging utilities for LPP-CGN runs.
 

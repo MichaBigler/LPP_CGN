@@ -409,7 +409,7 @@ def add_candidate_choice_per_line(m, model, z_g, cand_by_line, name="cand_line")
         g = int(model.line_idx_to_group[ell])
         if not cand_list:
             # keine Kandidaten -> Linie muss aus sein
-            m.addConstr(z_g[g] == 0, name=f"{name}_force_off[g{g},l{ell}]")
+            #m.addConstr(z_g[g] == 0, name=f"{name}_force_off[g{g},l{ell}]")
             continue
         vars_ell = []
         for k in range(len(cand_list)):
@@ -469,16 +469,6 @@ def add_infrastructure_capacity_with_candidates_per_line(
         )
 
 
-def add_path_replanning_cost_per_line(m, model, y_line, cand_by_line, f_expr, cost_repl_line):
-    terms = []
-    for ell, cand_list in cand_by_line.items():
-        for k, cand in enumerate(cand_list):
-            delta_abs = float(cand.get("add_len", 0.0) + cand.get("rem_len", 0.0))
-            if delta_abs == 0.0: 
-                continue
-            terms.append( cost_repl_line * delta_abs * y_line[ell, k] * f_expr[ell] )
-    return gp.quicksum(terms) if terms else gp.LinExpr(0.0)
-
 
 def build_obj_operating(
     data,
@@ -514,7 +504,7 @@ def build_obj_operating_with_candidates_per_line(
                                for k, c in enumerate(cand_list)
                                if (ell, k) in y_line)
         terms.append(f_expr[ell] * len_expr)
-    return gp.quicksum(terms)
+    return gp.quicksum(terms) if terms else gp.LinExpr(0.0)
 
 
 

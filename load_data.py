@@ -1,3 +1,4 @@
+#load_data.py
 # -*- coding: utf-8 -*-
 """
 load_data.py
@@ -23,7 +24,7 @@ from scipy.sparse import csr_matrix
 from data_model import LineDef, DomainData, ModelData, Config
 from typing import Any, cast, Optional
 from dataclasses import dataclass, asdict
-
+from data_model import CandidateConfig
 
 # ---------- Config-Parsing ----------
 
@@ -235,6 +236,12 @@ def build_scenarios(scen_prob_df: pd.DataFrame):
     """Szenario-Wahrscheinlichkeiten + id->index Map."""
     scen_ids = scen_prob_df['id'].astype(int).tolist()
     p_s = scen_prob_df['prob'].astype(float).to_numpy()
+    total = float(p_s.sum())
+    if not (0.0 < total):
+        raise ValueError("scenario_prob: Sum of probabilities must be > 0.")
+    # normalise if needed (tolerant)
+    if abs(total - 1.0) > 1e-9:
+        p_s = p_s / total
     scen_id_to_idx = {sid: s for s, sid in enumerate(scen_ids)}
     return p_s, scen_id_to_idx
 
@@ -251,14 +258,15 @@ def build_scenario_capacities(
     wird durch scenario_infra.csv überschrieben, wenn vorhanden.
     """
     S = len(scen_id_to_idx)
-    cap_sa = np.full((S, E_dir), int(cap_std), dtype=int)
+    cap_sa = np.full((S, E_dir), float(cap_std), dtype=np.float64)
     for _, r in scen_infra_df.iterrows():
         s = scen_id_to_idx[int(r['scenario'])]
-        u, v, cap = int(r['u']), int(r['v']), int(r['cap'])
+        u, v, cap = int(r['u']), int(r['v']), float(r['cap'])
         if (u, v) in arc_uv_to_idx:
-            cap_sa[s, arc_uv_to_idx[(u, v)]] = cap
+            cap_sa[s, arc_uv_to_idx[(v, u)]] = float(cap)
         if symmetrise_infra and (v, u) in arc_uv_to_idx:
-            cap_sa[s, arc_uv_to_idx[(v, u)]] = cap
+            cap_sa[s, arc_uv_to_idx[(v, u)]] = float(cap)
+    cap_sa = np.maximum(cap_sa, 0.0)
     return cap_sa
 
 def build_lines(
@@ -410,3 +418,34 @@ def load_and_build(
         A_edge_line=A_edge_line, A_node_line=A_node_line
     )
     return domain, model
+
+# load_candidate_config.py
+
+
+_BOOL_TRUE = {"1","true","y","yes"}
+def _as_bool(x, default=False):
+    if x is None: return default
+    s = str(x).strip().lower()
+    return s in _BOOL_TRUE if s in _BOOL_TRUE|{"0","false","n","no"} else default
+
+def load_candidate_config(data_root: str) -> CandidateConfig:
+    path = os.path.join(data_root, "Data", "config_candidates.csv")
+    if not os.path.exists(path):
+        return CandidateConfig()  # Defaults
+
+    df = pd.read_csv(path, sep=';')
+    if df.empty:
+        return CandidateConfig()
+
+    row = df.iloc[0].to_dict()
+    return CandidateConfig(
+        k_loc_detour          = int(row.get("k_loc_detour", 3)),
+        k_sp_global           = int(row.get("k_sp_global", 8)),
+        max_candidates_per_line = int(row.get("max_candidates_per_line", 20)),
+        div_min_edges         = int(row.get("div_min_edges", 1)),
+        w_len                 = (None if pd.isna(row.get("w_len", None)) else float(row.get("w_len"))),
+        w_repl                = (None if pd.isna(row.get("w_repl", None)) else float(row.get("w_repl"))),
+        corr_eps              = float(row.get("corr_eps", 0.25)),
+        generate_only_if_disrupted = _as_bool(row.get("generate_only_if_disrupted", True), True),
+        mirror_backward       = str(row.get("mirror_backward", "auto")).strip().lower(),
+    )
