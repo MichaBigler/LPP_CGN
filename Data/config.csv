@@ -1,13 +1,3 @@
-source;network;scenario_line_data;procedure;optimize_lines;routing_agg;eliminate_subtours;line_repl_allowed;waiting_time_frequency;gap;travel_time_cost_mult;waiting_time_cost_mult;line_operation_cost_mult;num_od;train_capacity;infrastructure_capacity;max_frequency;num_scenarios;cost_repl_freq;cost_repl_line;repl_budget
-lintim;SiouxFalls;SiouxFalls;integrated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;10;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;separated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;10;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;integrated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;20;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;separated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;20;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;integrated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;50;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;separated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;50;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;integrated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;100;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;separated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;100;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;integrated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;200;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;separated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;200;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;integrated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;500;50;12;8;2;100;500;-5
-lintim;SiouxFalls;SiouxFalls;separated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;5;50;500;50;12;8;2;100;500;-5
+source;network;scenario_line_data;procedure;optimize_lines;routing_agg;eliminate_subtours;line_repl_allowed;waiting_time_frequency;gap;travel_time_cost_mult;waiting_time_cost_mult;line_operation_cost_mult;num_od;train_capacity;infrastructure_capacity;max_frequency;num_scenarios;cost_repl_freq;cost_repl_line;repl_budget;bypass_multiplier
+lintim;SiouxFalls;SiouxFalls;integrated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;2;50;10;50;12;8;2;100;500;-5;0
+lintim;SiouxFalls;SiouxFalls;separated;FALSE;TRUE;TRUE;FALSE;FALSE;0;1;2;50;10;50;12;8;2;100;500;-5;0

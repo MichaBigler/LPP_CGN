@@ -162,6 +162,9 @@ def parse_config_row(cfg_row: dict) -> Config:
         cost_repl_line=_as_float(cfg_row.get('cost_repl_line'), 0.0),
         repl_budget=_as_float(cfg_row.get('repl_budget'), 0.0),
 
+        # default -1.0 => disabled unless explicitly set
+        bypass_multiplier=_as_float(cfg_row.get('bypass_multiplier'), -1.0),
+
         freq_values=_as_int_list(cfg_row.get('freq_values')),
 
         cand_detour_count=_as_int(cfg_row.get('cand_detour_count'), cand_default),
@@ -417,6 +420,7 @@ def load_and_build(
         adj_out=adj_out, adj_in=adj_in,
         A_edge_line=A_edge_line, A_node_line=A_node_line
     )
+    setattr(model, "config", domain.config)
     return domain, model
 
 # load_candidate_config.py

@@ -86,6 +86,19 @@ def make_cgn(data) -> CGN:
             arc_edge.append(-1);              arc_variant.append(0)
             arc_line_to.append(-1)            # keine Waiting-Kopplung
 
+
+    # 4) optionale BYPASS-Arcs: ground(i) -> ground(j) für jeden gerichteten Infra-Arc
+    bypass_mult = float(getattr(data, "config", {}).get("bypass_multiplier", -1.0))
+    if bypass_mult >= 0.0:
+        # wir kodieren sie als eigene arc_kind="bypass", mit arc_edge = infra-arc-id
+        nid2idx = data.node_id_to_idx
+        for a_idx, (u_id, v_id) in enumerate(data.idx_to_arc_uv):
+            u = nid2idx[u_id]; v = nid2idx[v_id]
+            tail = ground_of[u]; head = ground_of[v]
+            arc_tail.append(tail);           arc_head.append(head)
+            arc_kind.append("bypass");       arc_line.append(-1)
+            arc_edge.append(int(a_idx));     arc_variant.append(-1)
+            arc_line_to.append(-1)
     A = len(arc_tail)
 
     in_arcs  = [[] for _ in range(V)]

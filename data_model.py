@@ -58,7 +58,8 @@ class Config:
     cost_repl_line: float = 0.0
     repl_budget: float = 0.0
 
-    
+    # Bypass multiplier: <0 disables; >=0 enables (cost = length * multiplier)
+    bypass_multiplier: float = -1.0
 
 
     # optional: Frequenzwerte explizit (z. B. "1,2,3,4,6")

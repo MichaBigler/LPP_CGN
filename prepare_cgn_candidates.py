@@ -121,6 +121,16 @@ def make_cgn_with_candidates_per_line(model, cand_lines_s: Dict[int, List[dict]]
     node_line    = [ln for (_, ln, _) in cgn_nodes]
     node_variant = [kv for (_, _, kv) in cgn_nodes]
 
+    # --- BYPASS arcs at ground-level (same as nominal CGN) ---
+    bypass_mult = float(getattr(model, "config", {}).get("bypass_multiplier", -1.0))
+    if bypass_mult >= 0.0:
+         for a_idx, (u_id, v_id) in enumerate(model.idx_to_arc_uv):
+             u = int(model.node_id_to_idx[u_id]); v = int(model.node_id_to_idx[v_id])
+             arc_tail.append(ground_of[u]);   arc_head.append(ground_of[v])
+             arc_kind.append("bypass");       arc_line.append(-1)
+             arc_edge.append(int(a_idx));     arc_variant.append(-1)
+             arc_line_to.append(-1)
+
     return CGN(
         V, A, in_arcs, out_arcs, ground_of,
         arc_tail, arc_head, arc_kind, arc_line, arc_edge, arc_variant,

@@ -315,16 +315,30 @@ def build_obj_invehicle(
     use_t_min_time: bool = True,
 ):
     """
-    In-Vehicle-Zeit: Sum_{Ride-Arcs a, keys} t_a * x[a,key]
-    t_a = t_min_a (oder Länge)
+    Travel-time / path-cost bucket:
+      - ride arcs: (t_min or length) * x
+      - bypass arcs (if enabled): (len * bypass_multiplier) * x
+    These costs go into the 'time' component and hence are logged under cost_time/time_raw.
     """
     time_a = data.t_min_a if use_t_min_time else data.len_a
     ride = [a for a in range(cgn.A) if cgn.arc_kind[a] == "ride"]
-    return gp.quicksum(
+    expr = gp.quicksum(
         time_a[cgn.arc_edge[a]] * x[a, key]
         for a in ride
         for key in arc_to_keys.get(a, [])
     )
+
+    # Bypass (optional)
+    bypass_mult = float(getattr(data, "config", {}).get("bypass_multiplier", -1.0))
+    if bypass_mult >= 0.0:
+        bypass = [a for a in range(cgn.A) if cgn.arc_kind[a] == "bypass"]
+        if bypass:
+            expr += gp.quicksum(
+                bypass_mult * float(data.len_a[cgn.arc_edge[a]]) * x[a, key]
+                for a in bypass
+                for key in arc_to_keys.get(a, [])
+            )
+    return expr
 
 
 def build_obj_waiting(
