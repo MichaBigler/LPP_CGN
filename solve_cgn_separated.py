@@ -1,4 +1,5 @@
 # solve_cgn.py
+import os
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
@@ -65,6 +66,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
     per_s = []
     for s in range(S):
         m = gp.Model(f"LPP_TWO_STAGE_S{str(s)}")
+        m.Params.Threads = os.cpu_count()
         cgn = make_cgn_with_candidates_per_line(model, cand_all_lines[s])
         
 

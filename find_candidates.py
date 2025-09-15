@@ -610,9 +610,6 @@ def build_candidates_all_scenarios_per_line(
                 )
 
         results[int(s)] = per_line
-        total = sum(len(v) for v in per_line.values())
-        empties = [ell for ell, L in per_line.items() if not L]
-        print(f"[cands] s={s}: total_cands={total}, empty_lines={len(empties)} -> {empties[:10]}")
 
     return results
 
