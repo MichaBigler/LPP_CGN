@@ -22,6 +22,7 @@ from solve_utils import (
     _cand_counts, _freq_values_from_config, _routing_is_aggregated,
     _waiting_mode, _line_lengths, _group_lengths, _rep_line_of_group, _add_flows
 )
+from data_model import CandidateConfig
 
 def _debug_print_candidates_lines(cand_all_lines: dict[int, dict[int, list[dict]]],
                                   *, max_lines: int = 3, max_examples: int = 2) -> None:
@@ -52,14 +53,7 @@ def _debug_print_candidates_lines(cand_all_lines: dict[int, dict[int, list[dict]
 # ---------- TWO-STAGE INTEGRATED (joint) ----------
 
 def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
-    import gurobipy as gp
-    from gurobipy import GRB
 
-    # FIX: falsche/überflüssige Imports oben entfernen
-    # from xml.parsers.expat import model   # <-- raus!
-    # from preprare_cgn import make_cgn     # <-- Tippfehler
-    # korrekt:
-    # from prepare_cgn import make_cgn
 
     m = gp.Model("LPP_TWO_STAGE_INTEGRATED")
     m.Params.Threads = os.cpu_count()
@@ -68,7 +62,7 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
     detour_cnt, ksp_cnt = _cand_counts(domain)
     cand_cfg = getattr(domain, "cand_cfg", None)
     if cand_cfg is None:
-        from data_model import CandidateConfig
+        
         cand_cfg = CandidateConfig()  # Fallback-Defaults
 
     cand_all_lines = build_candidates_all_scenarios_per_line_cfg(model, cand_cfg, domain.config)
@@ -92,19 +86,18 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
     }
 
     # ---------- Stage 1 ----------
-    x0, arc_to0 = _add_flows(m, model, cgn, aggregated)
+    x0, arc_to_keys = _add_flows(m, model, cgn, aggregated)
     z0, delta0, f0_expr, h0_expr = add_frequency_grouped(m, model, freq_vals)
 
     Q = int(domain.config.get("train_capacity", 200))
-    add_passenger_capacity(m, model, cgn, x0, f0_expr, arc_to0, Q=Q)
+    add_passenger_capacity(m, model, cgn, x0, f0_expr, arc_to_keys, Q=Q)
     cap_std = int(domain.config.get("infrastructure_capacity", 10))
     add_infrastructure_capacity(m, model, f0_expr, cap_std=cap_std)
 
-    time0 = build_obj_invehicle(m, model, cgn, x0, arc_to0, use_t_min_time=True)
+    time0 = build_obj_invehicle(m, model, cgn, x0, arc_to_keys, use_t_min_time=True)
     wait0, y0 = build_obj_waiting(
-        m, model, cgn, x0, arc_to0, freq_vals, z0,  # delta0? Falls deine waiting-Funktion delta erwartet, hier delta0.
-        include_origin_wait=True,
-        waiting_time_frequency=wait_freq
+        m, model, cgn, x0, arc_to_keys, freq_vals, delta0,  # must be delta0
+        include_origin_wait=True, waiting_time_frequency=wait_freq
     )
     oper0, _ = build_obj_operating(model, f0_expr)
 
@@ -203,6 +196,10 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
             setattr(m.Params, k, v)
     if "time_limit" in domain.config:
         m.Params.TimeLimit = int(domain.config["time_limit"])
+    if "threads" in domain.config:
+        m.Params.Threads = int(domain.config["threads"])
+    if "seed" in domain.config:
+        m.Params.Seed = int(domain.config["seed"])
     if "mip_gap" in domain.config:
         m.Params.MIPGap = float(domain.config["mip_gap"])
     elif "gap" in domain.config:

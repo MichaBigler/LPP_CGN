@@ -1,4 +1,4 @@
-# solve_cgn.py
+# solve_utils.py
 from optimisation import (
     od_pairs, add_flow_conservation, add_flow_conservation_by_origin,
 )

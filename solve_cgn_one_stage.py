@@ -1,4 +1,4 @@
-# solve_cgn.py
+# solve_cgn_one_stage.py
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
@@ -25,20 +25,20 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
     wait_freq = _waiting_mode(domain)
 
     # flows
-    x0, arc_to0 = _add_flows(m, model, cgn, aggregated)
+    x0, arc_to_keys = _add_flows(m, model, cgn, aggregated)
 
     # grouped frequencies (with on/off via z_g)
     z0, delta0, f0_expr, h0_expr = add_frequency_grouped(m, model, freq_vals)
 
     # capacities
     Q = int(domain.config.get("train_capacity", 200))
-    add_passenger_capacity(m, model, cgn, x0, f0_expr, arc_to0, Q=Q)
+    add_passenger_capacity(m, model, cgn, x0, f0_expr, arc_to_keys, Q=Q)
     cap_std = int(domain.config.get("infrastructure_capacity", 10))
     add_infrastructure_capacity(m, model, f0_expr, cap_std=cap_std)
 
     # costs
-    time0 = build_obj_invehicle(m, model, cgn, x0, arc_to0, use_t_min_time=True)
-    wait0, y0 = build_obj_waiting(m, model, cgn, x0, arc_to0, freq_vals, delta0,
+    time0 = build_obj_invehicle(m, model, cgn, x0, arc_to_keys, use_t_min_time=True)
+    wait0, y0 = build_obj_waiting(m, model, cgn, x0, arc_to_keys, freq_vals, delta0,
                                   include_origin_wait=True,
                                   waiting_time_frequency=wait_freq)
     oper0, line_len = build_obj_operating(model, f0_expr)
@@ -56,6 +56,10 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
             setattr(m.Params, k, v)
     if "time_limit" in domain.config:
         m.Params.TimeLimit = int(domain.config["time_limit"])
+    if "threads" in domain.config:
+        m.Params.Threads = int(domain.config["threads"])
+    if "seed" in domain.config:
+        m.Params.Seed = int(domain.config["seed"])
     if "mip_gap" in domain.config:
         m.Params.MIPGap = float(domain.config["mip_gap"])
     elif "gap" in domain.config:

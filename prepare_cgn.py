@@ -1,8 +1,8 @@
-# cgn.py
+# prepare_cgn.py
 from dataclasses import dataclass
 from typing import List, Tuple, Dict
 
-from cgn import CGN
+from data_model import CGN
 
 
 def make_cgn(data) -> CGN:

@@ -17,11 +17,11 @@ from optimisation import (
 )
 from solve_utils import (
     _freq_values_from_config, _routing_is_aggregated, _waiting_mode,
-    _add_flows, _line_lengths, _group_lengths, _rep_line_of_group, _cand_counts, _add_flows
+    _add_flows, _line_lengths, _group_lengths, _rep_line_of_group, _cand_counts
 )
 
 from solve_cgn_one_stage import solve_one_stage
-
+from data_model import CandidateConfig
 
 # ---------- TWO-STAGE SEPARATED (sequential) ----------
 
@@ -54,7 +54,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
 
     cand_cfg = getattr(domain, "cand_cfg", None)
     if cand_cfg is None:
-        from data_model import CandidateConfig
+        
         cand_cfg = CandidateConfig()  # Fallback-Defaults
 
     cand_all_lines = build_candidates_all_scenarios_per_line_cfg(model, cand_cfg, domain.config)
@@ -71,7 +71,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         
 
         # Flüsse + Frequenzen
-        x, arc_to = _add_flows(m, model, cgn, aggregated)
+        x, arc_to_keys = _add_flows(m, model, cgn, aggregated)
         zs, delta_s, f_s_expr, h_s_expr = add_frequency_grouped(m, model, freq_vals)
 
         for g, Lg in lines_by_group.items():
@@ -87,7 +87,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
             m, model, cgn,
             x=x,
             f_expr=f_s_expr,
-            arc_to_keys=arc_to,
+            arc_to_keys=arc_to_keys,
             Q=Q,
             y_line=y,
             name=f"pass_cap_s{s}",
@@ -96,8 +96,8 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
                                                     cap_per_arc=model.cap_sa[s, :], name=f"infra_s{s}")
 
         # Kosten
-        time = build_obj_invehicle(m, model, cgn, x, arc_to, use_t_min_time=True)
-        wait, y_wait = build_obj_waiting(m, model, cgn, x, arc_to, freq_vals, delta_s,
+        time = build_obj_invehicle(m, model, cgn, x, arc_to_keys, use_t_min_time=True)
+        wait, y_wait = build_obj_waiting(m, model, cgn, x, arc_to_keys, freq_vals, delta_s,
                                          include_origin_wait=True,
                                          waiting_time_frequency=wait_freq)
         oper = build_obj_operating_with_candidates_per_line(model, f_s_expr, y, cand_all_lines[s])
@@ -113,7 +113,6 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
             name=f"repl_path_s{s}"
         )
 
-        # FIX 2: replanning with explicit deviation variables (no gp.abs_)
         # d_{g,s} >= | f_g^(s) - f_g^(0) |
         repl_terms = []
         d_vars = {}
@@ -138,6 +137,10 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
                 setattr(m.Params, k, v)
         if "time_limit" in domain.config:
             m.Params.TimeLimit = int(domain.config["time_limit"])
+        if "threads" in domain.config:
+            m.Params.Threads = int(domain.config["threads"])
+        if "seed" in domain.config:
+            m.Params.Seed = int(domain.config["seed"])
         if "mip_gap" in domain.config:
             m.Params.MIPGap = float(domain.config["mip_gap"])
         elif "gap" in domain.config:

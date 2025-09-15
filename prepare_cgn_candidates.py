@@ -1,6 +1,6 @@
-# cgn_candidates.py (oder in cgn.py neben make_cgn)
+# prepare_cgn_candidates.py (oder in cgn.py neben make_cgn)
 from typing import Dict, List, Tuple
-from cgn import CGN
+from data_model import CGN
 
 def make_cgn_with_candidates_per_line(model, cand_lines_s: Dict[int, List[dict]]) -> CGN:
     """
