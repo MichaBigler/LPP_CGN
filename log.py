@@ -16,12 +16,13 @@ from typing import Dict, Any, Iterable, List, Optional
 import pandas as pd
 import csv
 
+
 BASE_EXTRA_COLS = [
-    "status_code","status","objective","runtime_s",
-    "cost_time","cost_wait","cost_oper",
-    "obj_stage1","obj_stage2_exp",
-    "repl_cost_freq_exp","repl_cost_path_exp","repl_cost_exp",
-]
+     "status_code","status","objective","runtime_s",
+     "cost_time","cost_time_base","cost_time_over","cost_bypass","cost_wait","cost_oper",
+     "obj_stage1","obj_stage2_exp",
+     "repl_cost_freq_exp","repl_cost_path_exp","repl_cost_exp",
+ ]
 
 def _arc_seq_to_nodes_and_arcs(model, arc_seq: List[int]) -> tuple[str, str, Optional[int], Optional[int]]:
         """Erzeuge (nodes_str, arcs_str, start_id, end_id) aus einer Arc-Sequenz."""
@@ -94,17 +95,8 @@ class RunBatchLogger:
         cand_all: dict[int, dict[int, list[dict]]] | None = None, # {s: {g: [cand...]}}
         use_stop_ids: bool = True,  # True: externe Stop-IDs, False: 0..N-1 Indizes
     ) -> str:
-        """
-        Breite Frequenz-Tabelle erweitert um Pfadspalten:
-        - oben: 6 Zeilen mit prob/objective/cost_time/cost_wait/cost_oper/cost_repl
-                (Werte stehen in den *_freq-Spalten; *_path bleibt leer)
-        - darunter: je Linie: nominal_freq, nominal_path, und je Szenario: scenario <id>_freq/_path
+        
 
-        Pfade pro Szenario: falls cand_selected & cand_all vorhanden -> gewählter Kandidat;
-                            sonst nominaler Pfad.
-        """
-        import os
-        import pandas as pd
 
         # --- Hilfsfunktionen ------------------------------------------------
         idx_to_node_id = getattr(model, "idx_to_node_id", None)  # Liste: idx -> ext. ID
@@ -194,17 +186,21 @@ class RunBatchLogger:
             return v
 
         def _meta_row(label: str) -> dict:
-            row = {"line": label, "group": "", "nominal_freq": (_get(nom, "objective") if label == "objective"
-                                                                else _get(nom, "time") if label == "cost_time"
-                                                                else _get(nom, "wait") if label == "cost_wait"
-                                                                else _get(nom, "oper") if label == "cost_oper"
-                                                                else "")}
+            row = {"line": label, "group": "", "nominal_freq": (
+                _get(nom, "objective") if label == "objective" else
+                _get(nom, "time")      if label == "cost_time" else
+                _get(nom, "bypass")    if label == "cost_bypass" else   # <<--- NEU
+                _get(nom, "wait")      if label == "cost_wait" else
+                _get(nom, "oper")      if label == "cost_oper" else
+                ""
+        )}
             row["nominal_path"] = ""
             for sid, s in zip(scen_ids, scenarios):
                 row[f"scenario {sid}_freq"] = (
                     _get(s, "prob")       if label == "prob" else
                     _get(s, "objective")  if label == "objective" else
                     _get(s, "cost_time")  if label == "cost_time" else
+                    _get(s, "cost_bypass") if label == "cost_bypass" else
                     _get(s, "cost_wait")  if label == "cost_wait" else
                     _get(s, "cost_oper")  if label == "cost_oper" else
                     _get(s, "cost_repl")  if label == "cost_repl" else
@@ -217,6 +213,7 @@ class RunBatchLogger:
             _meta_row("prob"),
             _meta_row("objective"),
             _meta_row("cost_time"),
+            _meta_row("cost_bypass"),
             _meta_row("cost_wait"),
             _meta_row("cost_oper"),
             _meta_row("cost_repl"),

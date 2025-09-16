@@ -8,7 +8,7 @@ from find_candidates import build_candidates_all_scenarios_per_line_cfg
 from optimisation import (
     od_pairs, add_flow_conservation, add_flow_conservation_by_origin,
     add_passenger_capacity, add_infrastructure_capacity,
-    build_obj_invehicle, build_obj_waiting, build_obj_operating, build_obj_operating_with_candidates_per_line, set_objective,
+    build_obj_invehicle, build_obj_invehicle_with_overdemand, build_obj_bypass, build_obj_waiting, build_obj_operating, build_obj_operating_with_candidates_per_line, set_objective,
     add_frequency_grouped,
     add_candidate_choice_per_line,
     add_passenger_capacity_with_candidates_per_line,
@@ -85,18 +85,20 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         # Kapazitäten ersetzen:
         add_passenger_capacity_with_candidates_per_line(
             m, model, cgn,
-            x=x,
-            f_expr=f_s_expr,
-            arc_to_keys=arc_to_keys,
-            Q=Q,
-            y_line=y,
+            x, f_s_expr, arc_to_keys, Q, y,
             name=f"pass_cap_s{s}",
         )
         add_infrastructure_capacity_with_candidates_per_line(m, model, f_s_expr, y, cand_all_lines[s],
                                                     cap_per_arc=model.cap_sa[s, :], name=f"infra_s{s}")
 
         # Kosten
-        time = build_obj_invehicle(m, model, cgn, x, arc_to_keys, use_t_min_time=True)
+        tau = float(domain.config.get("overdemand_threshold", 1.0))
+        mu  = float(domain.config.get("overdemand_multiplier", 1.0))
+        time_base_raw, time_over_raw = build_obj_invehicle_with_overdemand(
+            m, model, cgn, x, arc_to_keys, f_s_expr, Q, threshold=tau, multiplier=mu, use_t_min_time=True
+        )
+        time = time_base_raw + max(mu - 1.0, 0.0) * time_over_raw
+        bypass = build_obj_bypass(m, model, cgn, x, arc_to_keys)
         wait, y_wait = build_obj_waiting(m, model, cgn, x, arc_to_keys, freq_vals, delta_s,
                                          include_origin_wait=True,
                                          waiting_time_frequency=wait_freq)
@@ -129,7 +131,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         repl = gp.quicksum(repl_terms)
 
         # stage-2 objective
-        m.setObjective(time_w * time + wait_w * wait + op_w * oper + repl + repl_path, GRB.MINIMIZE)
+        m.setObjective(time_w * time + bypass + wait_w * wait + op_w * oper + repl + repl_path, GRB.MINIMIZE)
 
 
         if gurobi_params:
@@ -164,7 +166,10 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
                 chosen[ell] = f
 
         # extract components
-        time_val = float(time.getValue()) if m.SolCount else None
+        time_val       = float(time.getValue()) if m.SolCount else None
+        time_base_raw_ = float(time_base_raw.getValue()) if m.SolCount else None
+        time_over_raw_ = float(time_over_raw.getValue()) if m.SolCount else None
+        bypass_raw = float(bypass.getValue()) if m.SolCount else None
         wait_raw = float(wait.getValue()) if m.SolCount else None
         oper_val = float(oper.getValue()) if m.SolCount else None
 
@@ -175,7 +180,10 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         obj_val = float(m.ObjVal) if m.SolCount else None
 
         # weighted for logging
-        time_w_val = (time_w * time_val) if time_val is not None else None
+        time_w_val  = (time_w * time_val) if time_val is not None else None
+        time_base_w = (time_w * time_base_raw_) if time_base_raw_ is not None else None
+        time_over_w = (time_w * max(mu - 1.0, 0.0) * time_over_raw_) if time_over_raw_ is not None else None
+        bypass_w_val  = bypass_raw if bypass_raw is not None else None
         wait_w_val = (wait_w * wait_raw) if wait_raw is not None else None
         oper_w_val = (op_w   * oper_val) if oper_val is not None else None
 
@@ -184,6 +192,9 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
             objective=obj_val,                 # enthält time_w+wait_w+op_w + repl + repl_path
             chosen_freq=chosen,
             cost_time=time_w_val,
+            cost_time_base=time_base_w,
+            cost_time_over=time_over_w,
+            cost_bypass=bypass_w_val,
             cost_wait=wait_w_val,
             cost_oper=oper_w_val,
             cost_repl_freq=repl_freq_val,
@@ -191,6 +202,9 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
             cost_repl=repl_total,            # Summe für einfache Auswertung
             # raw:
             cost_time_raw=time_val,
+            cost_time_base_raw=time_base_raw_,
+            cost_time_over_raw=time_over_raw_,
+            cost_bypass_raw=bypass_raw,
             cost_wait_raw=wait_raw,
             cost_oper_raw=oper_val,
         ))
@@ -216,12 +230,21 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         "prob": float(model.p_s[s]),
         "freq": per_s[s]["chosen_freq"],
         "cost_time": per_s[s]["cost_time"],
+        "cost_time_base": per_s[s].get("cost_time_base"),
+        "cost_time_over": per_s[s].get("cost_time_over"),
+        "cost_bypass": per_s[s]["cost_bypass"],
         "cost_wait": per_s[s]["cost_wait"],
         "cost_oper": per_s[s]["cost_oper"],
         "cost_repl_freq": per_s[s]["cost_repl_freq"],
         "cost_repl_path": per_s[s]["cost_repl_path"],
         "cost_repl": per_s[s]["cost_repl"],
         "objective": per_s[s]["objective"],
+        "cost_time_raw": per_s[s]["cost_time_raw"],
+        "cost_time_base_raw": per_s[s]["cost_time_base_raw"],
+        "cost_time_over_raw": per_s[s]["cost_time_over_raw"],
+        "cost_bypass_raw": per_s[s]["cost_bypass_raw"],
+        "cost_wait_raw": per_s[s]["cost_wait_raw"],
+        "cost_oper_raw": per_s[s]["cost_oper_raw"],
     } for s in range(S)]
 
     solution = dict(

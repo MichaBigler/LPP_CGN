@@ -165,6 +165,9 @@ def parse_config_row(cfg_row: dict) -> Config:
         # default -1.0 => disabled unless explicitly set
         bypass_multiplier=_as_float(cfg_row.get('bypass_multiplier'), -1.0),
 
+        overdemand_threshold=_as_float(cfg_row.get('overdemand_threshold'), 1.0),
+        overdemand_multiplier=_as_float(cfg_row.get('overdemand_multiplier'), 1.0),
+
         freq_values=_as_int_list(cfg_row.get('freq_values')),
 
         cand_detour_count=_as_int(cfg_row.get('cand_detour_count'), cand_default),

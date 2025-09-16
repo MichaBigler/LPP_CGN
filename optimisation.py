@@ -315,10 +315,7 @@ def build_obj_invehicle(
     use_t_min_time: bool = True,
 ):
     """
-    Travel-time / path-cost bucket:
-      - ride arcs: (t_min or length) * x
-      - bypass arcs (if enabled): (len * bypass_multiplier) * x
-    These costs go into the 'time' component and hence are logged under cost_time/time_raw.
+    Travel-time bucket (ride arcs only). Bypass is handled by build_obj_bypass().
     """
     time_a = data.t_min_a if use_t_min_time else data.len_a
     ride = [a for a in range(cgn.A) if cgn.arc_kind[a] == "ride"]
@@ -327,19 +324,77 @@ def build_obj_invehicle(
         for a in ride
         for key in arc_to_keys.get(a, [])
     )
-
-    # Bypass (optional)
-    bypass_mult = float(getattr(data, "config", {}).get("bypass_multiplier", -1.0))
-    if bypass_mult >= 0.0:
-        bypass = [a for a in range(cgn.A) if cgn.arc_kind[a] == "bypass"]
-        if bypass:
-            expr += gp.quicksum(
-                bypass_mult * float(data.len_a[cgn.arc_edge[a]]) * x[a, key]
-                for a in bypass
-                for key in arc_to_keys.get(a, [])
-            )
     return expr
 
+def build_obj_invehicle_with_overdemand(
+    m: gp.Model,
+    data,
+    cgn: CGN,
+    x: gp.tupledict,
+    arc_to_keys: Dict[int, List[Any]],
+    f_expr: Dict[int, gp.LinExpr],
+    Q: int,
+    *,
+    threshold: float = 1.0,  # τ in [0,1]
+    multiplier: float = 1.0, # μ >= 1
+    use_t_min_time: bool = True,
+):
+    """
+    Returns (time_raw, over_raw) as linear expressions.
+    - time_raw = sum_a t_a * sum_keys x[a,key]
+    - over_raw = sum_a t_a * s_a,  s_a >= sum_keys x[a,key] - τ * Q * f_ell(a), s_a >= 0
+    Caller forms total = time_raw + (max(multiplier-1,0)) * over_raw and multiplies by time_w.
+    """
+    tau = max(0.0, min(1.0, float(threshold)))
+    mu  = float(multiplier)
+    use_over = (mu > 1.0) and (tau < 1.0)
+
+    time_a = data.t_min_a if use_t_min_time else data.len_a
+    ride = [a for a in range(cgn.A) if cgn.arc_kind[a] == "ride"]
+
+    # sum of flows per arc
+    def flow_sum_on_arc(a: int):
+        keys = arc_to_keys.get(a, [])
+        return gp.quicksum(x[a, key] for key in keys) if keys else gp.LinExpr(0.0)
+
+    time_raw = gp.LinExpr(0.0)
+    over_raw = gp.LinExpr(0.0)
+
+    if not use_over:
+        # no surcharge; just the base time term
+        for a in ride:
+            time_raw += float(time_a[cgn.arc_edge[a]]) * flow_sum_on_arc(a)
+        return time_raw, over_raw
+
+    # with overdemand hinge
+    for a in ride:
+        ell = int(cgn.arc_line[a])
+        t   = float(time_a[cgn.arc_edge[a]])
+        F_a = flow_sum_on_arc(a)
+        T_a = tau * float(Q) * f_expr[ell]
+
+        s = m.addVar(lb=0.0, name=f"overdemand_s[a{a}]")
+        m.addConstr(s >= F_a - T_a, name=f"overdemand_hinge[a{a}]")
+
+        time_raw += t * F_a
+        over_raw += t * s
+
+    return time_raw, over_raw
+
+def build_obj_bypass(m, data, cgn, x, arc_to_keys):
+    """Bypass cost bucket: sum(len_a * bypass_multiplier * flow) over 'bypass' arcs.
+    Returned value is already 'fully weighted' by bypass_multiplier (no time_w)."""
+    bypass_mult = float(getattr(data, "config", {}).get("bypass_multiplier", -1.0))
+    if bypass_mult < 0.0:
+        return gp.LinExpr(0.0)
+    bypass = [a for a in range(cgn.A) if cgn.arc_kind[a] == "bypass"]
+    if not bypass:
+        return gp.LinExpr(0.0)
+    return gp.quicksum(
+        bypass_mult * float(data.len_a[cgn.arc_edge[a]]) * x[a, key]
+        for a in bypass
+        for key in arc_to_keys.get(a, [])
+    )
 
 def build_obj_waiting(
     m, data, cgn, x, arc_to_keys, freq_vals, delta,

@@ -5,8 +5,8 @@ from gurobipy import GRB
 from prepare_cgn import make_cgn
 from optimisation import (
     add_passenger_capacity, add_infrastructure_capacity,
-    build_obj_invehicle, build_obj_waiting, build_obj_operating, set_objective,
-    add_frequency_grouped,
+    build_obj_invehicle, build_obj_waiting, build_obj_operating,
+    add_frequency_grouped, build_obj_bypass, build_obj_invehicle_with_overdemand
 )
 from solve_utils import (
     _freq_values_from_config, _routing_is_aggregated,
@@ -37,7 +37,13 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
     add_infrastructure_capacity(m, model, f0_expr, cap_std=cap_std)
 
     # costs
-    time0 = build_obj_invehicle(m, model, cgn, x0, arc_to_keys, use_t_min_time=True)
+    tau = float(domain.config.get("overdemand_threshold", 1.0))
+    mu  = float(domain.config.get("overdemand_multiplier", 1.0))
+    time0_base_raw, time0_over_raw = build_obj_invehicle_with_overdemand(
+        m, model, cgn, x0, arc_to_keys, f0_expr, Q, threshold=tau, multiplier=mu, use_t_min_time=True
+    )
+    time0_total = time0_base_raw + max(mu - 1.0, 0.0) * time0_over_raw
+    bypass0 = build_obj_bypass(m, model, cgn, x0, arc_to_keys)
     wait0, y0 = build_obj_waiting(m, model, cgn, x0, arc_to_keys, freq_vals, delta0,
                                   include_origin_wait=True,
                                   waiting_time_frequency=wait_freq)
@@ -48,7 +54,7 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
     wait_w = float(domain.config.get("waiting_time_cost_mult", 1.0))
     op_w   = float(domain.config.get("line_operation_cost_mult", 1.0))
 
-    set_objective(m, time0, wait0, oper0, time_w=time_w, wait_w=wait_w, op_w=op_w)
+    m.setObjective(time_w * time0_total + bypass0 + wait_w * wait0 + op_w * oper0, GRB.MINIMIZE)
 
     # params
     if gurobi_params:
@@ -80,18 +86,28 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
     # costs
     costs0 = {}
     if m.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT) and m.SolCount > 0:
-        v_time0_raw = float(time0.getValue())
+        v_time0_base_raw = float(time0_base_raw.getValue())
+        v_time0_over_raw = float(time0_over_raw.getValue())
+        v_time0_raw = v_time0_base_raw + max(mu - 1.0, 0.0) * v_time0_over_raw
+        v_bypass0_raw = float(bypass0.getValue())
         v_wait0_raw = float(wait0.getValue())
         v_oper0_raw = float(oper0.getValue())
 
         v_time0 = time_w * v_time0_raw
+        v_time0_base = time_w * v_time0_base_raw
+        v_time0_over = time_w * max(mu - 1.0, 0.0) * v_time0_over_raw
+        v_bypass0 = v_bypass0_raw
         v_wait0 = wait_w * v_wait0_raw
         v_oper0 =   op_w * v_oper0_raw
 
-        obj0 = v_time0 + v_wait0 + v_oper0
+        obj0 = v_time0 + v_bypass0 + v_wait0 + v_oper0
         costs0 = dict(
-            time=v_time0, wait=v_wait0, oper=v_oper0, objective=obj0,
-            time_raw=v_time0_raw, wait_raw=v_wait0_raw, oper_raw=v_oper0_raw
+            time=v_time0, time_base=v_time0_base, time_over=v_time0_over,
+            bypass=v_bypass0,
+            wait=v_wait0, oper=v_oper0, objective=obj0,
+            time_raw=v_time0_raw, time_base_raw=v_time0_base_raw, time_over_raw=v_time0_over_raw,
+            bypass_raw=v_bypass0_raw,
+            wait_raw=v_wait0_raw, oper_raw=v_oper0_raw
         )
 
     solution = dict(

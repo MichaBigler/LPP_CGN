@@ -23,10 +23,13 @@ def _agg_components_two_stage(solution):
     def _sum_scens(key):
         return sum(float(s.get("prob") or 0.0) * float(s.get(key) or 0.0) for s in scen_list)
 
-    agg_time = float(nom.get("time") or 0.0) + _sum_scens("cost_time")
+    agg_time      = float(nom.get("time")      or 0.0) + _sum_scens("cost_time")
+    agg_time_base = float(nom.get("time_base") or 0.0) + _sum_scens("cost_time_base")
+    agg_time_over = float(nom.get("time_over") or 0.0) + _sum_scens("cost_time_over")
+    agg_bypass = float(nom.get("bypass") or 0.0) + _sum_scens("cost_bypass")
     agg_wait = float(nom.get("wait") or 0.0) + _sum_scens("cost_wait")
     agg_oper = float(nom.get("oper") or 0.0) + _sum_scens("cost_oper")
-    return agg_time, agg_wait, agg_oper
+    return agg_time, agg_time_base, agg_time_over, agg_bypass, agg_wait, agg_oper
 
 
 def _as_bool(x, default=False):
@@ -111,6 +114,9 @@ def main():
                     "objective": solution.get("objective"),
                     "runtime_s": solution.get("runtime_s"),
                     "cost_time": nom.get("time"),
+                    "cost_time_base": nom.get("time_base"),
+                    "cost_time_over": nom.get("time_over"),
+                    "cost_bypass": nom.get("bypass"),
                     "cost_wait": nom.get("wait"),
                     "cost_oper": nom.get("oper"),
                     "obj_stage1": nom.get("objective"),
@@ -121,22 +127,17 @@ def main():
                 })
                 logger.write_freq_file(i, solution.get("chosen_freq") or artifacts.get("chosen_freq", {}))
             else:
-                # aggregate stage-1 + expected stage-2 component costs
-                nom = solution.get("costs_0") or {}
-                scen_list = solution.get("scenarios") or []
-                agg_time = (float(nom.get("time") or 0.0)
-                            + sum(float(s.get("prob") or 0.0) * float(s.get("cost_time") or 0.0) for s in scen_list))
-                # cost_wait ist bereits GEWICHTET (mit waiting_time_cost_mult) in beiden Stages
-                agg_wait = (float(nom.get("wait") or 0.0)
-                            + sum(float(s.get("prob") or 0.0) * float(s.get("cost_wait") or 0.0) for s in scen_list))
-                agg_oper = (float(nom.get("oper") or 0.0)
-                            + sum(float(s.get("prob") or 0.0) * float(s.get("cost_oper") or 0.0) for s in scen_list))
-
+                # sauber aggregieren (inkl. Base/Over-Split & Bypass)
+                agg_time, agg_time_base, agg_time_over, agg_bypass, agg_wait, agg_oper = _agg_components_two_stage(solution)
+                
                 base_row.update({
                     "status": _status_name(solution.get("status")),
                     "objective":     solution.get("objective"),
                     "runtime_s":     solution.get("runtime_s"),
                     "cost_time":     agg_time,
+                    "cost_time_base": agg_time_base,
+                    "cost_time_over": agg_time_over,
+                    "cost_bypass":   agg_bypass,
                     "cost_wait":     agg_wait,
                     "cost_oper":     agg_oper,
                     "obj_stage1":    solution.get("obj_stage1"),
