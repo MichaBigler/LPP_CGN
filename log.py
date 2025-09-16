@@ -51,7 +51,18 @@ class RunBatchLogger:
         # Initialise header once
         if not os.path.exists(self.base_log_path):
             pd.DataFrame(columns=self.base_columns).to_csv(self.base_log_path, sep=';', index=False)
-
+    
+    def run_dir(self, run_index: int, *, name: str | None = None) -> str:
+        """
+        Liefert den Ordner für eine konkrete config-Zeile.
+        Standard: Results/<stamp>/row_XXX/
+        Optional 'name' könnte man später als Suffix nutzen (z.B. row_003_metroA).
+        """
+        dirname = f"row_{int(run_index):03d}" if not name else f"row_{int(run_index):03d}_{name}"
+        path = os.path.join(self.out_dir, dirname)
+        os.makedirs(path, exist_ok=True)
+        return path
+    
     # -------- helpers --------
     def base_row_template(self, cfg_row: pd.Series) -> Dict[str, Any]:
         """Prepares a dict with config columns filled from cfg_row and KPI columns set to None."""
@@ -69,17 +80,17 @@ class RunBatchLogger:
         df.to_csv(self.base_log_path, sep=';', index=False, mode='a', header=False)
 
     def write_freq_file(self, run_index: int, chosen_freq: Dict[int, int] | Dict[str, int]) -> str:
-        # keys robust in int wandeln, sortieren, schreiben
         rows = []
         for k, v in chosen_freq.items():
             try:
                 rows.append({"line": int(k), "freq": int(v)})
             except Exception:
-                # falls key/val mal nicht-castbar sind, überspringen
                 continue
         rows.sort(key=lambda r: r["line"])
         df = pd.DataFrame(rows, columns=["line", "freq"])
-        path = os.path.join(self.out_dir, f"row_{int(run_index):03d}_freq.csv")
+
+        base_dir = self.run_dir(run_index)
+        path = os.path.join(base_dir, "freq.csv")   # <-- jetzt im Run-Unterordner
         df.to_csv(path, sep=';', index=False)
         return path
 
@@ -186,24 +197,30 @@ class RunBatchLogger:
             return v
 
         def _meta_row(label: str) -> dict:
-            row = {"line": label, "group": "", "nominal_freq": (
-                _get(nom, "objective") if label == "objective" else
-                _get(nom, "time")      if label == "cost_time" else
-                _get(nom, "bypass")    if label == "cost_bypass" else   # <<--- NEU
-                _get(nom, "wait")      if label == "cost_wait" else
-                _get(nom, "oper")      if label == "cost_oper" else
-                ""
-        )}
-            row["nominal_path"] = ""
+            if label == "objective":
+                nom_val = _get(nom, "objective")
+            elif label == "cost_time":
+                nom_val = _get(nom, "time")
+            elif label == "cost_bypass":
+                nom_val = _get(nom, "bypass")
+            elif label == "cost_wait":
+                nom_val = _get(nom, "wait")
+            elif label == "cost_oper":
+                nom_val = _get(nom, "oper")
+            else:
+                nom_val = ""
+
+            row = {"line": label, "group": "", "nominal_freq": nom_val, "nominal_path": ""}
+
             for sid, s in zip(scen_ids, scenarios):
                 row[f"scenario {sid}_freq"] = (
-                    _get(s, "prob")       if label == "prob" else
-                    _get(s, "objective")  if label == "objective" else
-                    _get(s, "cost_time")  if label == "cost_time" else
+                    _get(s, "prob") if label == "prob" else
+                    _get(s, "objective") if label == "objective" else
+                    _get(s, "cost_time") if label == "cost_time" else
                     _get(s, "cost_bypass") if label == "cost_bypass" else
-                    _get(s, "cost_wait")  if label == "cost_wait" else
-                    _get(s, "cost_oper")  if label == "cost_oper" else
-                    _get(s, "cost_repl")  if label == "cost_repl" else
+                    _get(s, "cost_wait") if label == "cost_wait" else
+                    _get(s, "cost_oper") if label == "cost_oper" else
+                    _get(s, "cost_repl") if label == "cost_repl" else
                     ""
                 )
                 row[f"scenario {sid}_path"] = ""
@@ -241,7 +258,8 @@ class RunBatchLogger:
         df_freq = pd.DataFrame(freq_rows, columns=cols)
         # --- schreiben -------------------------------------------------------
         df_out = pd.concat([df_meta, df_freq], ignore_index=True)
-        path = os.path.join(self.out_dir, f"row_{int(run_index):03d}_freq.csv")
+        base_dir = self.run_dir(run_index)
+        path = os.path.join(base_dir, "freq.csv")   # <-- jetzt im Run-Unterordner
         df_out.to_csv(path, sep=';', index=False)
         return path
     
@@ -256,9 +274,10 @@ class RunBatchLogger:
         selected: Optional[Dict[int, Dict[int, int]]] = None,   # {s: {ell or group: k}}
         freqs_per_s: Optional[List[Dict[int, int]]] = None,      # [ {ell: f}, ... ]
     ) -> str:
-        import csv, os
         if out_csv is None:
-            out_csv = os.path.join("Results", f"candidates_run{run_id}.csv")
+            base_dir = self.run_dir(run_id)
+            out_csv = os.path.join(base_dir, "candidates.csv")   # <-- jetzt im Run-Unterordner
+        else:
             os.makedirs(os.path.dirname(out_csv), exist_ok=True)
 
         with open(out_csv, "w", newline="", encoding="utf-8") as fh:
@@ -294,3 +313,105 @@ class RunBatchLogger:
                             sel_flag, f_row
                         ])
         return out_csv
+    
+    def write_edge_passenger_flows(
+        self,
+        run_index: int,
+        model,
+        cgn,
+        x_vars,
+        *,
+        arc_to_keys: dict | None = None,
+        filename_suffix: str = "",
+    ) -> str:
+        from collections import defaultdict
+        import csv, os
+
+        out_path = os.path.join(self.run_dir(run_index), f"edge_flows{filename_suffix}.csv")
+
+        # ---------- Helpers: rekursiv Werte aufsummieren ----------
+        def _is_iterable(v):
+            return isinstance(v, (list, tuple, set, dict))
+
+        def _val_of(v) -> float:
+            """Gurobi-Var / Skalar / Iterable (rekursiv) in float-Summe umwandeln."""
+            if v is None:
+                return 0.0
+            if hasattr(v, "X"):  # Gurobi Var
+                try: return float(v.X)
+                except Exception: return 0.0
+            if _is_iterable(v):
+                it = v.values() if isinstance(v, dict) else v
+                return sum(_val_of(x) for x in it)
+            try: return float(v)
+            except Exception: return 0.0
+
+        def _lookup_by_locator(locator) -> float:
+            """
+            locator kann sein:
+            - direkt eine Var
+            - ein int-Index (für list/tuple x_vars)
+            - ein Key in dict x_vars
+            - oder ein Iterable von obigen
+            """
+            if locator is None:
+                return 0.0
+            if hasattr(locator, "X"):
+                return _val_of(locator)
+            if _is_iterable(locator):
+                it = locator.values() if isinstance(locator, dict) else locator
+                return sum(_lookup_by_locator(k) for k in it)
+            # einfacher Lookup
+            if isinstance(x_vars, (list, tuple)) and isinstance(locator, int):
+                if 0 <= locator < len(x_vars):
+                    return _val_of(x_vars[locator])
+                return 0.0
+            try:
+                v = x_vars[locator]
+                return _val_of(v)  # v kann Var ODER Iterable sein
+            except Exception:
+                return 0.0
+
+        def _x_value_for_arc(a: int) -> float:
+            # 1) bevorzugt via Mapping
+            if arc_to_keys is not None and a in arc_to_keys:
+                return _lookup_by_locator(arc_to_keys[a])
+            # 2) Fallback: positionsbasiert (nur wenn x_vars sequenziell ist)
+            if isinstance(x_vars, (list, tuple)) and 0 <= a < len(x_vars):
+                return _val_of(x_vars[a])
+            return 0.0
+        # -----------------------------------------------------------
+
+        total_by_edge = defaultdict(float)
+        by_edge_line  = defaultdict(lambda: defaultdict(float))
+        len_a = getattr(model, "len_a", None)
+
+        # Robuste Erkennung von "ride": arc_edge >= 0
+        arc_edge = getattr(cgn, "arc_edge", None)
+        arc_line = getattr(cgn, "arc_line", None)
+        A = len(arc_edge) if arc_edge is not None else 0
+
+        for a in range(A):
+            e = int(arc_edge[a]) if arc_edge is not None else -1
+            if e < 0:
+                continue  # kein Fahr-Arc
+            ell = int(arc_line[a]) if arc_line is not None else -1
+            val = _x_value_for_arc(a)
+            if val == 0.0:
+                continue
+            total_by_edge[e] += val
+            by_edge_line[e][ell] += val  # ell kann -1 (bypass) sein – wird separat ausgewiesen
+
+        # alle Linienspalten
+        all_lines = sorted({ell for mp in by_edge_line.values() for ell in mp})
+
+        with open(out_path, "w", newline="", encoding="utf-8") as fh:
+            wr = csv.writer(fh, delimiter=";")
+            wr.writerow(["edge_id", "edge_len", "flow_total"] + [f"flow_line_{ell}" for ell in all_lines])
+            E = getattr(model, "E_dir", 0)
+            for e in range(E):
+                L = float(len_a[e]) if len_a is not None else 0.0
+                tot = total_by_edge.get(e, 0.0)
+                wr.writerow([e, L, tot] + [by_edge_line[e].get(ell, 0.0) for ell in all_lines])
+
+        return out_path

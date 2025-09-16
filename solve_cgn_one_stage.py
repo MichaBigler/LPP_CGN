@@ -118,7 +118,14 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
         chosen_freq=chosen_freq0,
         costs_0=costs0
     )
-    artifacts = dict(model=m, cgn=cgn, delta0=delta0, f0_expr=f0_expr,
-                     x0=x0, y0=y0, line_len=line_len)
+    artifacts = dict(
+        cgn_stage1=cgn,
+        x_stage1=x0,
+        arc_to_keys_stage1=arc_to_keys,  # falls deine _add_flows das so nennt
+        cgn_stage2_list=[],
+        x_stage2_list=[],
+        arc_to_keys_stage2_list=[],
+        line_len=line_len
+    )
     return m, solution, artifacts
 

@@ -1,4 +1,4 @@
-# solve_cgn.py
+# solve_cgn_separated.py
 import os
 import numpy as np
 import gurobipy as gp
@@ -64,6 +64,11 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
     selected = {}
     S = len(model.p_s)
     per_s = []
+
+    cgn_s_list = []      
+    x_s_list = []
+    arc_to_keys_s_list = []
+
     for s in range(S):
         m = gp.Model(f"LPP_TWO_STAGE_S{str(s)}")
         m.Params.Threads = os.cpu_count()
@@ -72,6 +77,9 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
 
         # Flüsse + Frequenzen
         x, arc_to_keys = _add_flows(m, model, cgn, aggregated)
+        cgn_s_list.append(cgn)           # cgn des Szenarios
+        x_s_list.append(x)
+        arc_to_keys_s_list.append(arc_to_keys)
         zs, delta_s, f_s_expr, h_s_expr = add_frequency_grouped(m, model, freq_vals)
 
         for g, Lg in lines_by_group.items():
@@ -263,11 +271,16 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         costs_0=sol0.get("costs_0"),
     )
     artifacts = dict(
-        per_s=per_s,
-        line_len=line_len,
-        group_len=glen,
-        probs=p,
-        candidates_lines=cand_all_lines,      # <- neuer Key (klarer)
-        cand_selected_lines=selected,         # <- neuer Key (per Linie)
+        cgn_stage1 = art0["cgn_stage1"],
+        x_stage1 = art0["x_stage1"],
+        arc_to_keys_stage1 = art0.get("arc_to_keys_stage1"),
+
+        cgn_stage2_list = cgn_s_list,
+        x_stage2_list = x_s_list,
+        arc_to_keys_stage2_list = arc_to_keys_s_list,
+
+        line_len=line_len, group_len=glen, probs=p,
+        candidates_lines=cand_all_lines,
+        cand_selected_lines=selected,
     )
     return None, solution, artifacts  # main model returned as None here (we solved submodels)

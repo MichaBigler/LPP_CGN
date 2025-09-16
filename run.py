@@ -126,6 +126,12 @@ def main():
                     "repl_cost_exp": None,
                 })
                 logger.write_freq_file(i, solution.get("chosen_freq") or artifacts.get("chosen_freq", {}))
+                logger.write_edge_passenger_flows(
+                    i, model,
+                    artifacts["cgn_stage1"], artifacts["x_stage1"],
+                    arc_to_keys=artifacts.get("arc_to_keys_stage1"),
+                    filename_suffix="_stage1",
+                )
             else:
                 # sauber aggregieren (inkl. Base/Over-Split & Bypass)
                 agg_time, agg_time_base, agg_time_over, agg_bypass, agg_wait, agg_oper = _agg_components_two_stage(solution)
@@ -160,14 +166,33 @@ def main():
                 freqs_per_s = solution.get("chosen_freq_stage2") or []
 
                 logger.write_candidates(
-                    i,                          # run_id (positional)
-                    model,                      # model   (positional)
-                    candidates_per_s=cand_per_s,  # <-- als Keyword!
-                    out_csv=os.path.join(logger.out_dir, f"candidates_run{i}.csv"),
-                    c_repl_line=float(domain.config.get("cost_repl_line", 0.0)),
-                    selected=sel_per_s,
-                    freqs_per_s=freqs_per_s,
+                    i,
+                    model,
+                    candidates_per_s = artifacts.get("candidates") or artifacts.get("candidates_lines") or {},
+                    c_repl_line      = float(domain.config.get("cost_repl_line", 0.0)),
+                    selected         = artifacts.get("cand_selected") or artifacts.get("cand_selected_lines") or {},
+                    freqs_per_s      = solution.get("chosen_freq_stage2") or [],
                 )
+
+
+                # Stage 1
+                logger.write_edge_passenger_flows(
+                    i, model,
+                    artifacts["cgn_stage1"], artifacts["x_stage1"],
+                    arc_to_keys=artifacts.get("arc_to_keys_stage1"),
+                    filename_suffix="_stage1",
+                )
+                
+                # Stage 2 je Szenario
+                for s, (cgn_s, x_s) in enumerate(zip(artifacts.get("cgn_stage2_list", []), artifacts.get("x_stage2_list", []))):
+                    a2k_s = None
+                    a2k_list = artifacts.get("arc_to_keys_stage2_list", [])
+                    if s < len(a2k_list): a2k_s = a2k_list[s]
+                    logger.write_edge_passenger_flows(
+                        i, model, cgn_s, x_s,
+                        arc_to_keys=a2k_s,
+                        filename_suffix=f"_stage2_{s}",
+                    )
 
             print(f"Status={_status_name(solution.get('status'))}  Obj={solution.get('objective')}  "
                 f"Stage1={base_row.get('obj_stage1')}  Stage2_exp={base_row.get('obj_stage2_exp')}  "
@@ -193,6 +218,25 @@ def main():
                 base_row["status_code"] = int(solution.get("status_code", -1))
             else:
                 base_row["status_code"] = -1
+
+            try:
+                if artifacts and isinstance(artifacts, dict):
+                    # Stage 1
+                    cgn0 = artifacts.get("cgn") or artifacts.get("cgn0")
+                    x0   = artifacts.get("x0")
+                    atk0 = artifacts.get("arc_to_keys0") or artifacts.get("arc_to_keys")
+                    if cgn0 is not None and x0 is not None:
+                        logger.write_edge_passenger_flows(i, model, cgn0, x0, arc_to_keys=atk0, filename_suffix="_stage1")
+
+                    # Stage 2 je Szenario
+                    cgn_s_list = artifacts.get("cgn_s_list") or []
+                    xs_list    = artifacts.get("xs") or artifacts.get("x_s_list") or []
+                    atk_s_list = artifacts.get("arc_to_keys_s") or []
+                    for s, (cgn_s, x_s) in enumerate(zip(cgn_s_list, xs_list)):
+                        atk_s = atk_s_list[s] if s < len(atk_s_list) else None
+                        logger.write_edge_passenger_flows(i, model, cgn_s, x_s, arc_to_keys=atk_s, filename_suffix=f"_s{s}")
+            except Exception as _e:
+                print(f"[WARN] edge-flow logging failed for run {i}: {_e}")
             logger.append_base_row(base_row)
 
     print(f"\nBase log: {logger.base_log_path}")

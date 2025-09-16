@@ -113,6 +113,9 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
     zs, deltas, f_expr_s, y_s, time_s, wait_s, oper_s = [], [], [], [], [], [], []
     repl_path_s = []
     time_base_s, time_over_s = [], []
+    cgn_s_list = []
+    x_s_list = []
+    arc_to_keys_s_list = []
 
     c_repl_line = float(domain.config.get("cost_repl_line", 0.0))
     c_repl_freq = float(domain.config.get("cost_repl_freq", 0.0))
@@ -123,6 +126,9 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
         cgn_s = make_cgn_with_candidates_per_line(model, cand_all_lines[s])
 
         xi, arc_toi = _add_flows(m, model, cgn_s, aggregated)
+        cgn_s_list.append(cgn_s)
+        x_s_list.append(xi)
+        arc_to_keys_s_list.append(arc_toi)
         zs_i, delta_i, f_expr_i, h_expr_i = add_frequency_grouped(m, model, freq_vals)
 
         # Gruppen ohne Kandidaten deaktivieren
@@ -328,10 +334,14 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
     )
 
     artifacts = dict(
-        model=m, cgn=cgn, delta0=delta0, deltas=deltas,
-        f0_expr=f0_expr, f_expr_s=f_expr_s, d=d,
+        cgn_stage1=cgn,
+        x_stage1=x0,
+        arc_to_keys_stage1=arc_to_keys,
+        cgn_stage2_list=cgn_s_list,
+        x_stage2_list=x_s_list,
+        arc_to_keys_stage2_list=arc_to_keys_s_list,
         line_len=line_len, group_len=glen, probs=p,
-        candidates_lines=cand_all_lines,         # <- per Linie
-        cand_selected_lines=selected,            # <- per Linie
+        candidates_lines=cand_all_lines,
+        cand_selected_lines=selected,
     )
     return m, solution, artifacts
