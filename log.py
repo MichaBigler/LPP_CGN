@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Dict, Any, Iterable, List, Optional
 import pandas as pd
 import csv
-
+from collections import defaultdict
 
 BASE_EXTRA_COLS = [
      "status_code","status","objective","runtime_s",
@@ -107,7 +107,32 @@ class RunBatchLogger:
         use_stop_ids: bool = True,  # True: externe Stop-IDs, False: 0..N-1 Indizes
     ) -> str:
         
+        nominal = {int(k): int(v) for k, v in (nominal or {}).items() if v is not None}
 
+        scenarios = [
+            (lambda s: (lambda s2: (s2.update(
+                freq={int(k): int(v) for k, v in (s.get("freq") or {}).items() if v is not None}
+            ) or s2))({**s}))(s)
+            for s in (scenarios or [])
+        ]
+
+        # 2) Auf per-Line expandieren (Line-Key hat Vorrang, sonst Group-Key)
+        L = int(getattr(model, "L", 0))
+        line_to_group = getattr(model, "line_idx_to_group", None)
+
+        def _expand_to_lines(freq_map: dict[int, int]) -> dict[int, int]:
+            if not isinstance(freq_map, dict) or L == 0 or line_to_group is None:
+                return {int(k): int(v) for k, v in (freq_map or {}).items()}
+            out = {}
+            for ell in range(L):
+                g = int(line_to_group[ell])
+                val = freq_map.get(ell, freq_map.get(g, 0))
+                out[ell] = int(val)
+            return out
+
+        nominal = _expand_to_lines(nominal)
+        for s in scenarios:
+            s["freq"] = _expand_to_lines(s.get("freq", {}))
 
         # --- Hilfsfunktionen ------------------------------------------------
         idx_to_node_id = getattr(model, "idx_to_node_id", None)  # Liste: idx -> ext. ID
@@ -324,94 +349,122 @@ class RunBatchLogger:
         arc_to_keys: dict | None = None,
         filename_suffix: str = "",
     ) -> str:
-        from collections import defaultdict
-        import csv, os
+        
 
         out_path = os.path.join(self.run_dir(run_index), f"edge_flows{filename_suffix}.csv")
 
-        # ---------- Helpers: rekursiv Werte aufsummieren ----------
-        def _is_iterable(v):
-            return isinstance(v, (list, tuple, set, dict))
-
-        def _val_of(v) -> float:
-            """Gurobi-Var / Skalar / Iterable (rekursiv) in float-Summe umwandeln."""
-            if v is None:
-                return 0.0
-            if hasattr(v, "X"):  # Gurobi Var
-                try: return float(v.X)
-                except Exception: return 0.0
-            if _is_iterable(v):
-                it = v.values() if isinstance(v, dict) else v
-                return sum(_val_of(x) for x in it)
-            try: return float(v)
-            except Exception: return 0.0
-
-        def _lookup_by_locator(locator) -> float:
-            """
-            locator kann sein:
-            - direkt eine Var
-            - ein int-Index (für list/tuple x_vars)
-            - ein Key in dict x_vars
-            - oder ein Iterable von obigen
-            """
-            if locator is None:
-                return 0.0
-            if hasattr(locator, "X"):
-                return _val_of(locator)
-            if _is_iterable(locator):
-                it = locator.values() if isinstance(locator, dict) else locator
-                return sum(_lookup_by_locator(k) for k in it)
-            # einfacher Lookup
-            if isinstance(x_vars, (list, tuple)) and isinstance(locator, int):
-                if 0 <= locator < len(x_vars):
-                    return _val_of(x_vars[locator])
-                return 0.0
+        # ---------- Helpers ----------
+        def _safe_val(v) -> float:
             try:
-                v = x_vars[locator]
-                return _val_of(v)  # v kann Var ODER Iterable sein
+                return float(getattr(v, "X", v))
             except Exception:
                 return 0.0
 
-        def _x_value_for_arc(a: int) -> float:
-            # 1) bevorzugt via Mapping
-            if arc_to_keys is not None and a in arc_to_keys:
-                return _lookup_by_locator(arc_to_keys[a])
-            # 2) Fallback: positionsbasiert (nur wenn x_vars sequenziell ist)
-            if isinstance(x_vars, (list, tuple)) and 0 <= a < len(x_vars):
-                return _val_of(x_vars[a])
+        def _get_from_tupledict(td, key):
+            try:
+                return td[key]
+            except Exception:
+                return None
+
+        def _flow_on_arc(a: int) -> float:
+            # Sum over all subkeys if present
+            if hasattr(x_vars, "items") and hasattr(x_vars, "__getitem__"):
+                if arc_to_keys is not None:
+                    loc = arc_to_keys.get(a, None)
+                    if isinstance(loc, list):
+                        s = 0.0
+                        for sub in loc:
+                            key = (a, sub) if not isinstance(sub, tuple) else sub
+                            v = _get_from_tupledict(x_vars, key)
+                            s += _safe_val(v)
+                        return s
+                    elif isinstance(loc, tuple):
+                        v = _get_from_tupledict(x_vars, loc);  return _safe_val(v)
+                    elif loc is not None:
+                        v = _get_from_tupledict(x_vars, (a, loc))
+                        if v is not None: return _safe_val(v)
+                        v = _get_from_tupledict(x_vars, a);     return _safe_val(v)
+                # no mapping → try 1D and (a,0)
+                v = _get_from_tupledict(x_vars, a)
+                if v is not None: return _safe_val(v)
+                v = _get_from_tupledict(x_vars, (a, 0))
+                return _safe_val(v)
+
+            if isinstance(x_vars, (list, tuple)):
+                return _safe_val(x_vars[a]) if 0 <= a < len(x_vars) else 0.0
+            if isinstance(x_vars, dict):
+                return _safe_val(x_vars.get(a))
             return 0.0
-        # -----------------------------------------------------------
 
-        total_by_edge = defaultdict(float)
-        by_edge_line  = defaultdict(lambda: defaultdict(float))
-        len_a = getattr(model, "len_a", None)
+        # Map directed infra-edge id -> undirected id from edge.giv (if available)
+        # Try common attribute names; else fall back to UV-pair string "u-v".
+        _undir_map = None
+        for name in (
+            "edge_dir_to_undir_id", "dir_to_undir_edge_id",
+            "e_dir_to_e_undir", "edir_to_eund", "undir_id_of_dir_edge"
+        ):
+            _undir_map = getattr(model, name, None)
+            if _undir_map is not None:
+                break
+        _idx_to_uv = getattr(model, "idx_to_arc_uv_infra", None) or getattr(model, "idx_to_arc_uv", None)
 
-        # Robuste Erkennung von "ride": arc_edge >= 0
-        arc_edge = getattr(cgn, "arc_edge", None)
-        arc_line = getattr(cgn, "arc_line", None)
-        A = len(arc_edge) if arc_edge is not None else 0
+        def _undir_id(e_dir: int):
+            if _undir_map is not None:
+                try:
+                    return int(_undir_map[e_dir])
+                except Exception:
+                    pass
+            if _idx_to_uv is not None and 0 <= e_dir < len(_idx_to_uv):
+                u, v = _idx_to_uv[e_dir]
+                u, v = int(u), int(v)
+                # Falls es eine explizite UV->ID Map gibt, nutze sie:
+                for uvmap_name in ("uvpair_to_edge_id", "undir_edge_id_by_uv"):
+                    uvmap = getattr(model, uvmap_name, None)
+                    if uvmap is not None:
+                        key = (u, v) if u <= v else (v, u)
+                        gid = uvmap.get(key)
+                        if gid is not None:
+                            return int(gid)
+                # Fallback: stabile String-ID "min-max"
+                return f"{min(u,v)}, {max(u,v)}"
+            # letzter Fallback: directed id (sollte idealerweise nie passieren)
+            return f"dir-{int(e_dir)}"
+
+        # ---------- Aggregate flows per undirected edge (and by line) ----------
+        total_by_u = defaultdict(float)                    # undir_edge_id -> sum flow
+        by_u_line  = defaultdict(lambda: defaultdict(float))  # undir_edge_id -> line -> sum
+        len_by_u   = {}  # take first seen length per undir edge (assuming symmetric)
+
+        len_a = getattr(model, "len_a", None)  # directed edge lengths
+        A = len(cgn.arc_kind)
 
         for a in range(A):
-            e = int(arc_edge[a]) if arc_edge is not None else -1
-            if e < 0:
-                continue  # kein Fahr-Arc
-            ell = int(arc_line[a]) if arc_line is not None else -1
-            val = _x_value_for_arc(a)
+            if cgn.arc_kind[a] != "ride":
+                continue
+            e_dir = int(cgn.arc_edge[a])
+            if e_dir < 0:
+                continue
+            ell = int(cgn.arc_line[a])
+            val = _flow_on_arc(a)
             if val == 0.0:
                 continue
-            total_by_edge[e] += val
-            by_edge_line[e][ell] += val  # ell kann -1 (bypass) sein – wird separat ausgewiesen
+            e_u = _undir_id(e_dir)
+            total_by_u[e_u] += val
+            by_u_line[e_u][ell] += val
+            if e_u not in len_by_u:
+                L = float(len_a[e_dir]) if (len_a is not None and 0 <= e_dir < len(len_a)) else 0.0
+                len_by_u[e_u] = L
 
-        # alle Linienspalten
-        all_lines = sorted({ell for mp in by_edge_line.values() for ell in mp})
-
+        # Spalten: undirected edge-id, length (1. Vorkommen), total, pro Linie
+        all_lines = sorted({ell for mp in by_u_line.values() for ell in mp})
         with open(out_path, "w", newline="", encoding="utf-8") as fh:
             wr = csv.writer(fh, delimiter=";")
             wr.writerow(["edge_id", "edge_len", "flow_total"] + [f"flow_line_{ell}" for ell in all_lines])
-            E = getattr(model, "E_dir", 0)
-            for e in range(E):
-                L = float(len_a[e]) if len_a is not None else 0.0
-                tot = total_by_edge.get(e, 0.0)
-                wr.writerow([e, L, tot] + [by_edge_line[e].get(ell, 0.0) for ell in all_lines])
+            # feste Reihenfolge: sortiere IDs (str/int gemischt -> alles nach str)
+            for e_u in sorted(total_by_u.keys(), key=lambda k: str(k)):
+                row = [e_u, len_by_u.get(e_u, 0.0), total_by_u[e_u]] \
+                    + [by_u_line[e_u].get(ell, 0.0) for ell in all_lines]
+                wr.writerow(row)
 
+        print(f"[edgeflow] wrote {out_path} | undirected_edges={len(total_by_u)} | total_flow_sum={sum(total_by_u.values())}")
         return out_path

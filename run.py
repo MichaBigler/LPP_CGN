@@ -12,6 +12,7 @@ from load_data import load_candidate_config
 from solve_cgn_one_stage import solve_one_stage
 from solve_cgn_separated import solve_two_stage_separated
 from solve_cgn_integrated import solve_two_stage_integrated
+from solve_utils import _freq_values_from_config  
 
 from print import print_domain_summary, print_model_summary  # optional
 from log import RunBatchLogger
@@ -125,7 +126,19 @@ def main():
                     "repl_cost_path_exp": None,
                     "repl_cost_exp": None,
                 })
-                logger.write_freq_file(i, solution.get("chosen_freq") or artifacts.get("chosen_freq", {}))
+
+                logger.write_freqs_two_stage(
+                    i, model,
+                    nominal=(
+                        solution.get("chosen_freq")
+                        or solution.get("chosen_freq_stage1")
+                        or artifacts.get("chosen_freq")
+                        or artifacts.get("chosen_freq_stage1")
+                        or {}
+                    ),
+                    scenarios=[],
+                    nominal_costs=solution.get("costs_0"),
+                )
                 logger.write_edge_passenger_flows(
                     i, model,
                     artifacts["cgn_stage1"], artifacts["x_stage1"],
@@ -188,6 +201,8 @@ def main():
                     a2k_s = None
                     a2k_list = artifacts.get("arc_to_keys_stage2_list", [])
                     if s < len(a2k_list): a2k_s = a2k_list[s]
+                    print(f"[flows-debug] writing stage2 flows for run {i} scenario {s} with {len(x_s)} x-entries and arc_to_keys={a2k_s is not None}")
+                    print(a2k_list)
                     logger.write_edge_passenger_flows(
                         i, model, cgn_s, x_s,
                         arc_to_keys=a2k_s,
@@ -222,21 +237,33 @@ def main():
             try:
                 if artifacts and isinstance(artifacts, dict):
                     # Stage 1
-                    cgn0 = artifacts.get("cgn") or artifacts.get("cgn0")
-                    x0   = artifacts.get("x0")
-                    atk0 = artifacts.get("arc_to_keys0") or artifacts.get("arc_to_keys")
+                    cgn0 = artifacts.get("cgn_stage1") or artifacts.get("cgn")
+                    x0   = artifacts.get("x_stage1")   or artifacts.get("x0")
+                    atk0 = (artifacts.get("arc_to_keys_stage1")
+                            or artifacts.get("arc_to_keys0")
+                            or artifacts.get("arc_to_keys"))
                     if cgn0 is not None and x0 is not None:
-                        logger.write_edge_passenger_flows(i, model, cgn0, x0, arc_to_keys=atk0, filename_suffix="_stage1")
+                        logger.write_edge_passenger_flows(
+                            i, model, cgn0, x0,
+                            arc_to_keys=atk0, filename_suffix="_stage1"
+                        )
 
                     # Stage 2 je Szenario
-                    cgn_s_list = artifacts.get("cgn_s_list") or []
-                    xs_list    = artifacts.get("xs") or artifacts.get("x_s_list") or []
-                    atk_s_list = artifacts.get("arc_to_keys_s") or []
+                    cgn_s_list = artifacts.get("cgn_stage2_list") or []
+                    xs_list    = artifacts.get("x_stage2_list") or []
+                    atk_s_list = artifacts.get("arc_to_keys_stage2_list") or []
+                    # Debug: zeig Längen statt ganzer Objekte
+                    print(f"[flows-debug] stage2 counts: cgn={len(cgn_s_list)} x={len(xs_list)} atk={len(atk_s_list)}")
+
                     for s, (cgn_s, x_s) in enumerate(zip(cgn_s_list, xs_list)):
                         atk_s = atk_s_list[s] if s < len(atk_s_list) else None
-                        logger.write_edge_passenger_flows(i, model, cgn_s, x_s, arc_to_keys=atk_s, filename_suffix=f"_s{s}")
+                        logger.write_edge_passenger_flows(
+                            i, model, cgn_s, x_s,
+                            arc_to_keys=atk_s, filename_suffix=f"_stage2_{s}"
+                        )
             except Exception as _e:
                 print(f"[WARN] edge-flow logging failed for run {i}: {_e}")
+
             logger.append_base_row(base_row)
 
     print(f"\nBase log: {logger.base_log_path}")

@@ -23,11 +23,58 @@ from solve_utils import (
 from solve_cgn_one_stage import solve_one_stage
 from data_model import CandidateConfig
 
+def _x_to_1d(cgn, x_vars, arc_to_keys):
+        A = len(cgn.arc_kind)
+
+        def _val(v):
+            try:    return float(getattr(v, "X", v))
+            except: return 0.0
+
+        def _keys_for(a):
+            if arc_to_keys is None:
+                return []
+            loc = arc_to_keys.get(a, None)
+            if loc is None:
+                return []
+            subs = loc if isinstance(loc, list) else [loc]
+            out = []
+            for sub in subs:
+                out.append((a, *sub) if isinstance(sub, tuple) else (a, sub))
+            return out
+
+        x1d = {}
+        for a in range(A):
+            if cgn.arc_kind[a] != "ride":
+                continue
+            s = 0.0
+            for k in _keys_for(a):
+                try:
+                    s += _val(x_vars[k])
+                except Exception:
+                    pass
+            if s == 0.0 and (arc_to_keys is None or a not in arc_to_keys):
+                # conservative fallback: only x[a] or x[(a,0)] – no global scans
+                v = None
+                try:    v = x_vars[a]
+                except: v = x_vars.get((a, 0), None) if hasattr(x_vars, "get") else None
+                s = _val(v)
+            if s:
+                x1d[a] = s
+        return x1d
+
+
 # ---------- TWO-STAGE SEPARATED (sequential) ----------
 
 def solve_two_stage_separated(domain, model, *, gurobi_params=None):
     # 1) Stage 1
     m0, sol0, art0 = solve_one_stage(domain, model, gurobi_params=gurobi_params)
+
+    
+
+    cgn0 = art0["cgn_stage1"]
+    x0   = art0["x_stage1"]
+    a2k0 = art0.get("arc_to_keys_stage1") or art0.get("arc_to_keys0") or art0.get("arc_to_keys")
+    x0_1d = _x_to_1d(cgn0, x0, a2k0)
 
     # representative by group to reference f_expr
     freq_vals = _freq_values_from_config(domain)
@@ -158,6 +205,70 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
 
         m.optimize()
 
+        A = len(cgn.arc_kind)
+
+        def _val(v):
+            try:    return float(getattr(v, "X", v))
+            except: return 0.0
+
+        def _keys_for_arc(a, a2k):
+            """Baue exakt die x-Keys für Arc a aus arc_to_keys[a].
+               Keine Fallback-Scans, keine Dupes."""
+            if a2k is None:
+                return []
+            loc = a2k.get(a, None)
+            if loc is None:
+                return []
+            if isinstance(loc, list):
+                subs = loc
+            else:
+                subs = [loc]
+            keys = []
+            for sub in subs:
+                if isinstance(sub, tuple):
+                    keys.append((a, *sub))
+                else:
+                    keys.append((a, sub))
+            return keys
+
+        x_by_arc = {}
+        # arc_to_keys aus _add_flows dieses Szenarios:
+        a2k = arc_to_keys
+
+        for a in range(A):
+            if cgn.arc_kind[a] != "ride":
+                continue
+            # nur die explizit gemappten Keys summieren
+            s = 0.0
+            used = set()
+            for k in _keys_for_arc(a, a2k):
+                if k in used:
+                    continue
+                used.add(k)
+                try:
+                    s += _val(x[k])
+                except Exception:
+                    pass
+
+            # Falls es KEIN Mapping gibt, probiere NUR 1D/„(a,0)“-Konvention (ohne globales Scannen)
+            if s == 0.0 and (a2k is None or a not in a2k):
+                v = None
+                try:
+                    v = x[a]
+                except Exception:
+                    try:
+                        v = x[(a, 0)]
+                    except Exception:
+                        v = None
+                s = _val(v)
+
+            if s != 0.0:
+                x_by_arc[a] = s
+
+        # Logger-freundlich ablegen: 1D x und leeres Mapping
+        x_s_list[-1] = x_by_arc
+        arc_to_keys_s_list[-1] = {}
+
         chosen_k = {}
         for (ell, k), var in y.items():
             if var.X > 0.5:
@@ -271,10 +382,12 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         costs_0=sol0.get("costs_0"),
     )
     artifacts = dict(
-        cgn_stage1 = art0["cgn_stage1"],
-        x_stage1 = art0["x_stage1"],
-        arc_to_keys_stage1 = art0.get("arc_to_keys_stage1"),
+        # stage-1 (normalized)
+        cgn_stage1 = cgn0,
+        x_stage1   = x0_1d,
+        arc_to_keys_stage1 = {},   # tell logger "already flattened"
 
+        # stage-2 (your existing lists; stage-2 already normalized earlier)
         cgn_stage2_list = cgn_s_list,
         x_stage2_list = x_s_list,
         arc_to_keys_stage2_list = arc_to_keys_s_list,
