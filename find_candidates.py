@@ -1,51 +1,50 @@
-#find_candidates.py
+# find_candidates.py
 # -*- coding: utf-8 -*-
+"""
+Candidate path generation per line and per scenario for LPP-CGN.
+
+Main entry points:
+    - build_candidates_all_scenarios_per_line(...)
+    - build_candidates_all_scenarios_per_line_cfg(...)
+
+What this module does:
+- For each scenario s and each directed line ℓ, generate alternative ride paths
+  (nominal/base path, local detours, simple k-shortest variants).
+- Optional composite path weights (length + “replanning” penalty vs nominal).
+- Optional mirroring of forward-line candidates to the backward line.
+- Optional “generate only if disrupted” policy.
+- Optional diversity filter (minimum number of differing edges).
+- Optional cap for max candidates per line.
+
+Required model attributes (read-only):
+- idx_to_arc_uv: List[Tuple[u_id, v_id]]   directed infra arcs in original IDs
+- node_id_to_idx: Dict[node_id -> idx]     0..N-1 node index mapping
+- len_a: np.ndarray                         length per directed infra arc
+- cap_sa: np.ndarray (S × E_dir)            per-scenario capacity per directed arc (>0 means allowed)
+- line_idx_to_stops: List[List[int]]        node indices (0..N-1) along each line
+- line_idx_to_arcs:  List[List[int]]        directed arc ids along each line
+- line_group_to_lines: Dict[group -> (fwd_id, bwd_id)]   (optional; used when mirroring)
+- L: int                                    number of directed lines
+- E_dir: int                                number of directed infra arcs
+- p_s: np.ndarray                           scenario probabilities (used only for length S)
+"""
+
 from __future__ import annotations
-from typing import Dict, List, Tuple, Optional, Set, Iterable
+from typing import Dict, List, Tuple, Optional, Set, Iterable, Literal
 import heapq
-from typing import Literal
 
-"""
-find_candidates.py
-------------------
-Per-Linie Kandidatengenerierung für LPP-CGN.
-
-Hauptfunktion:
-    build_candidates_all_scenarios_per_line(...)
-
-Features:
-- Kandidaten je Linie und Szenario (nominal/base + lokale Detours + K-Shortest)
-- Optional: Composite-KSP-Gewichte (Länge + Replan-Penalty ggü. nominal)
-- Optional: Spiegeln der Vorwärts-Kandidaten auf die Rückwärtslinie (mirror_backward)
-- Optional: Kandidaten nur erzeugen, wenn nominal im Szenario verletzt ist (only_when_blocked)
-- Optional: Diversitätsfilter (minimale Anzahl unterschiedlicher Kanten)
-- Optional: Deckelung pro Linie (max_candidates_per_line)
-
-Benötigte Model-Felder:
-- idx_to_arc_uv: List[Tuple[u_id, v_id]] gerichtete Infrastruktur-Arcs (Original-ID)
-- node_id_to_idx: Dict[id -> idx] Mapping auf 0..N-1
-- len_a: Array[float] Länge je gerichteter Infrastruktur-Arc
-- cap_sa: Array[S, E_dir] Kapazität je Szenario und gerichteter Arc (>0: erlaubt)
-- line_idx_to_stops: List[List[int]] Knoten-INDIZES der Linie (0..N-1)
-- line_idx_to_arcs: List[List[int]] gerichtete Arc-IDs der Linie
-- line_group_to_lines: Dict[g] -> (ell_fwd, ell_bwd)  (optional, für mirror_backward)
-- L: Anzahl Linien
-- E_dir: Anzahl gerichteter Infrastruktur-Arcs
-- p_s: Szenario-Wahrscheinlichkeiten (wird hier nicht benötigt, nur Länge S)
-
-"""
+# Public enum-ish type for mirror behavior (kept for clarity/compatibility).
+MirrorMode = Literal["auto", "force", "off"]
 
 
+# ---------------------------------------------------------------------------
+# Low-level helpers: graph indexing, arc properties, and tiny utilities
+# ---------------------------------------------------------------------------
 
-
-# --------------------------- Low-level Helpers ---------------------------
-MirrorMode = Literal["auto","force","off"]
-
-
-def _arc_endpoints(model):
+def _arc_endpoints(model) -> Tuple[List[int], List[int]]:
     """
-    Liefert (tail, head) als Listen der Knoten-INDIZES (0..N-1) je gerichteter Arc,
-    basierend auf Original-IDs in idx_to_arc_uv und node_id_to_idx.
+    Return tails and heads (node indices 0..N-1) for every directed infra arc.
+    Based on original IDs in model.idx_to_arc_uv and mapping model.node_id_to_idx.
     """
     tails: List[int] = []
     heads: List[int] = []
@@ -57,9 +56,15 @@ def _arc_endpoints(model):
 
 
 def _arc_length(model, a: int) -> float:
+    """Length of directed infra arc a."""
     return float(model.len_a[a])
 
-def _as_bool(x, default=False) -> bool:
+
+def _as_bool(x, default: bool = False) -> bool:
+    """
+    Lenient boolean parsing for convenience parameters.
+    Accepts on/off variants; falls back to default otherwise.
+    """
     if x is None:
         return default
     if isinstance(x, bool):
@@ -71,13 +76,14 @@ def _as_bool(x, default=False) -> bool:
         return False
     return default
 
+
 def _rev_map(model) -> List[Optional[int]]:
     """
-    For each directed arc a, return some reverse arc ar (if any). Robust to multi-edges.
-    Preference: reverse with minimal absolute length difference.
+    For each directed arc a, return a suitable reverse directed arc ar (if any).
+    Robust to multi-edges: choose the reverse with the closest length to a.
     """
     tails, heads = _arc_endpoints(model)
-    # Map (u,v) -> list of arc indices
+    # Collect lists of arcs for each (u, v).
     by_uv: Dict[Tuple[int, int], List[int]] = {}
     for a in range(model.E_dir):
         by_uv.setdefault((tails[a], heads[a]), []).append(a)
@@ -89,7 +95,6 @@ def _rev_map(model) -> List[Optional[int]]:
         if not candidates:
             rev[a] = None
             continue
-        # pick reverse with closest length
         len_a = float(model.len_a[a])
         best = min(candidates, key=lambda r: abs(float(model.len_a[r]) - len_a))
         rev[a] = int(best)
@@ -97,40 +102,52 @@ def _rev_map(model) -> List[Optional[int]]:
 
 
 def allowed_arcs_forward(model, s: int, eps: float = 1e-9) -> Set[int]:
-    """Directed arcs allowed in scenario s (capacity strictly positive with tolerance)."""
+    """
+    Return the set of directed infra arcs whose capacity is strictly positive
+    in scenario s (with small tolerance eps).
+    """
     cap = model.cap_sa[s, :]
     return {a for a in range(model.E_dir) if float(cap[a]) > eps}
 
 
-# --------------------------- Graph Views & Shortest Path ---------------------------
-
+# ---------------------------------------------------------------------------
+# Graph view and shortest-path routines on the directed infra graph
+# ---------------------------------------------------------------------------
 
 def _adj_directed_weighted(model, allowed: Set[int], rev: List[Optional[int]], weight_fn):
+    """
+    Build an adjacency view for directed movement. For each allowed arc a: u->v,
+    add (v, a, ab, w_uv) where ab is the reverse arc if it exists and is allowed.
+    Also add v->u using ab (not a), if ab exists and is allowed. This gives
+    symmetric traversal only where both directions are actually usable.
+    """
     tails, heads = _arc_endpoints(model)
     adj: Dict[int, List[Tuple[int, int, Optional[int], float]]] = {}
-
     for a in allowed:
         u, v = tails[a], heads[a]
 
-        # u -> v (nur weil a erlaubt ist)
+        # u -> v via a
         w_uv = float(weight_fn(a))
         ab = rev[a] if (rev[a] is not None and rev[a] in allowed) else None
         adj.setdefault(u, []).append((v, a, ab, w_uv))
 
-        # v -> u NUR wenn echte Gegenrichtung existiert und ebenfalls erlaubt
+        # v -> u via ab if the reverse exists and is also allowed
         if ab is not None:
             w_vu = float(weight_fn(ab))
             adj.setdefault(v, []).append((u, ab, a, w_vu))
-
     return adj
 
 
-
 def _shortest_path(model, adj, src: int, dst: int) -> Optional[List[int]]:
-    """Dijkstra auf gerichteter Sicht; Rückgabe: Folge der **gerichteten Arc-IDs** entlang des Pfads."""
+    """
+    Dijkstra on the directed adjacency view.
+    Returns the sequence of directed arc-IDs along the path (not node IDs).
+    Empty list for src==dst, None if no path exists.
+    """
     pq = [(0.0, src)]
     dist = {src: 0.0}
     prev_arc: Dict[int, Tuple[int, int]] = {}  # node -> (prev_node, prev_arc_forward)
+
     while pq:
         d, u = heapq.heappop(pq)
         if u == dst:
@@ -143,11 +160,13 @@ def _shortest_path(model, adj, src: int, dst: int) -> Optional[List[int]]:
                 dist[v] = nd
                 prev_arc[v] = (u, a_fwd)
                 heapq.heappush(pq, (nd, v))
+
     if src == dst:
         return []
     if dst not in prev_arc:
         return None
-    # Rekonstruktion
+
+    # Reconstruct arc sequence from prev pointers.
     path: List[int] = []
     cur = dst
     while cur != src:
@@ -157,36 +176,50 @@ def _shortest_path(model, adj, src: int, dst: int) -> Optional[List[int]]:
     path.reverse()
     return path
 
-def _mk_nominal_candidate(model, ell):
+
+# ---------------------------------------------------------------------------
+# Convenience for “nominal/base” paths
+# ---------------------------------------------------------------------------
+
+def _mk_nominal_candidate(model, ell: int) -> Dict:
+    """Build a nominal candidate dict for line ℓ."""
     arcs_nom = list(map(int, model.line_idx_to_arcs[ell]))
     L_nom = sum(float(model.len_a[a]) for a in arcs_nom)
     return {
         "arcs": arcs_nom,
         "len": L_nom,
         "add_len": 0.0, "rem_len": 0.0, "delta_len_nom": 0.0,
-        "kind": "nominal", "is_nominal": True, "is_base": False
+        "kind": "nominal", "is_nominal": True, "is_base": False,
     }
 
-def _nominal_ok(model, s, ell, allowed=None):
+
+def _nominal_ok(model, s: int, ell: int, allowed: Optional[Set[int]] = None) -> bool:
+    """Check whether all nominal arcs of line ℓ are allowed in scenario s."""
     if allowed is None:
         allowed = allowed_arcs_forward(model, s)
     return all(int(a) in allowed for a in model.line_idx_to_arcs[ell])
 
-# --------------------------- Candidate Families ---------------------------
+
+# ---------------------------------------------------------------------------
+# Candidate families: local detours & simple KSP variants
+# ---------------------------------------------------------------------------
 
 def _path_src(model, path: List[int]) -> Optional[int]:
+    """Return the source node index of a directed arc sequence."""
     tails, _ = _arc_endpoints(model)
     return int(tails[path[0]]) if path else None
 
 
 def _path_dst(model, path: List[int]) -> Optional[int]:
+    """Return the destination node index of a directed arc sequence."""
     tails, heads = _arc_endpoints(model)
     return int(heads[path[-1]]) if path else None
 
 
 def _detour_candidates(model, adj, base_path: List[int], D: int) -> List[List[int]]:
     """
-    Lokale Umleitungen: jeweils eine Kante des Referenzpfades sperren und kürzesten Weg berechnen.
+    Local detours: forbid one arc of the reference path at a time, recompute the
+    shortest path, keep up to D unique alternatives.
     """
     if D <= 0 or not base_path:
         return []
@@ -202,7 +235,7 @@ def _detour_candidates(model, adj, base_path: List[int], D: int) -> List[List[in
     for idx, banned in enumerate(base_path):
         if len(uniq) >= D:
             break
-        # Kopie der Adjazenz mit gesperrtem Arc (in beiden Richtungen)
+        # Copy adjacency and drop the banned arc in both directions
         adj2 = {u: nbrs.copy() for u, nbrs in adj.items()}
         for u, nbrs in adj2.items():
             adj2[u] = [(v, af, ab, w) for (v, af, ab, w) in nbrs if af != banned and ab != banned]
@@ -217,8 +250,9 @@ def _detour_candidates(model, adj, base_path: List[int], D: int) -> List[List[in
 
 def _yen_ksp(model, adj, src: int, dst: int, K: int) -> List[List[int]]:
     """
-    Sehr einfache K-Shortest auf Basis von „Arc-Sperren“ der zuletzt akzeptierten Lösung.
-    Liefert bis zu K eindeutige Pfade (inkl. dem besten).
+    Very lightweight “K-shortest” generator via arc bans applied to the last
+    accepted solution. Returns up to K unique paths (including the best).
+    This is *not* a full Yen implementation, but is sufficient for variety.
     """
     if K <= 0:
         return []
@@ -229,6 +263,7 @@ def _yen_ksp(model, adj, src: int, dst: int, K: int) -> List[List[int]]:
     A: List[List[int]] = [base]
     B: List[Tuple[float, List[int]]] = []
     tried: Set[Tuple[int, int]] = set()
+
     while len(A) < K:
         ref = A[-1]
         for i, banned in enumerate(ref):
@@ -251,6 +286,7 @@ def _yen_ksp(model, adj, src: int, dst: int, K: int) -> List[List[int]]:
 
 
 def _unique_paths(paths: Iterable[List[int]]) -> List[List[int]]:
+    """Deduplicate a list of arc sequences while keeping order of first appearance."""
     out: List[List[int]] = []
     seen = set()
     for p in paths:
@@ -263,8 +299,8 @@ def _unique_paths(paths: Iterable[List[int]]) -> List[List[int]]:
 
 def _edge_diversity_ok(p: List[int], kept: List[List[int]], min_diff_edges: int) -> bool:
     """
-    Prüft, ob Pfad p sich in mindestens 'min_diff_edges' Kanten von allen bereits
-    behaltenen Pfaden unterscheidet (symmetrische Differenz).
+    Check that path p differs by at least `min_diff_edges` from each already kept path.
+    Distance metric: size of symmetric difference over arc-id sets.
     """
     if min_diff_edges <= 0:
         return True
@@ -274,7 +310,9 @@ def _edge_diversity_ok(p: List[int], kept: List[List[int]], min_diff_edges: int)
             return False
     return True
 
-def _uniq_keep_order(cands):
+
+def _uniq_keep_order(cands: List[Dict]) -> List[Dict]:
+    """Deduplicate candidates by their arc sequences while preserving order."""
     seen = set()
     out = []
     for c in cands:
@@ -286,12 +324,14 @@ def _uniq_keep_order(cands):
     return out
 
 
-# --------------------------- Per-Line Candidate Builder ---------------------------
+# ---------------------------------------------------------------------------
+# Per-line candidate builder (single scenario)
+# ---------------------------------------------------------------------------
 
 def _line_endpoints(model, ell: int) -> Tuple[int, int, List[int]]:
     """
-    src, dst, nominal-Arc-Sequenz für genau diese Linie ℓ (eine Richtung).
-    ACHTUNG: stops sind bereits Knoten-INDIZES (0..N-1).
+    Return (src, dst, nominal_arc_seq) for a *directed* line ℓ.
+    Note: line_idx_to_stops already stores node indices (0..N-1).
     """
     stops = list(map(int, model.line_idx_to_stops[ell]))
     arcs  = list(map(int, model.line_idx_to_arcs[ell]))
@@ -306,66 +346,77 @@ def candidates_for_line_scenario(
     ksp_count: int,
     rev: List[Optional[int]],
     *,
-    ksp_weight_mode: str = "length",
-    w_len: float = 1.0,
-    w_repl: float = 0.0,
-    gamma_ksp: Optional[float] = None,
-    only_when_blocked: bool = False,
-    min_edge_diff: int = 1,
-    max_candidates_per_line: Optional[int] = None,
-    corr_eps: Optional[float] = None,
+    ksp_weight_mode: str = "length",   # "length" or "composite"
+    w_len: float = 1.0,                 # length weight
+    w_repl: float = 0.0,                # replanning penalty weight (used if composite)
+    gamma_ksp: Optional[float] = None,  # override for replanning weight in KSP mode
+    only_when_blocked: bool = False,    # generate alternatives only if nominal is disrupted
+    min_edge_diff: int = 1,             # diversity threshold
+    max_candidates_per_line: Optional[int] = None,  # cap
+    corr_eps: Optional[float] = None,   # corridor: len(p) ≤ (1 + corr_eps) * len(reference)
 ) -> List[Dict]:
-    
+    """
+    Generate candidate paths for a single directed line ℓ in scenario s.
 
-    
-
+    Returns a list of dicts:
+        {
+          "arcs": [directed arc ids],
+          "len": float,
+          "add_len": float, "rem_len": float, "delta_len_nom": float,
+          "kind": "nominal" | "base" | "detour" | "ksp" | "alt",
+          "is_nominal": bool,
+          "is_base": bool
+        }
+    """
+    # Allowed infra arcs in this scenario
     allowed = allowed_arcs_forward(model, s)
+
+    # Endpoints and nominal arc chain for ℓ
     src, dst, nominal = _line_endpoints(model, ell)
     nominal_ok = all(a in allowed for a in nominal)
 
-
     nominal_set = set(nominal)
 
-    # Gewichtsfunktion
+    # Weight function for arcs
     if ksp_weight_mode.lower() == "composite":
+        # Composite: length + replanning penalty if arc not in nominal set
         gamma = float(w_repl if gamma_ksp is None else gamma_ksp)
         def weight_fn(a: int) -> float:
             L = _arc_length(model, a)
             return w_len * L + (gamma if a not in nominal_set else 0.0) * L
     else:
+        # Pure length-based weights
         def weight_fn(a: int) -> float:
             return w_len * _arc_length(model, a)
 
-    # gerichtete Sicht
+    # Directed adjacency for current scenario
     adj = _adj_directed_weighted(model, allowed, rev, weight_fn)
-    
 
-    # Referenzen
+    # Reference path: base shortest under current adjacency
     base = _shortest_path(model, adj, src, dst)
     if not base:
-     
+        # If no path under adjacency but the nominal is fully allowed, keep nominal
         if nominal_ok and nominal:
-            
             return [{
                 "arcs": nominal,
-                "len": sum(_arc_length(model,a) for a in nominal),
+                "len": sum(_arc_length(model, a) for a in nominal),
                 "add_len": 0.0, "rem_len": 0.0, "delta_len_nom": 0.0,
                 "kind": "nominal", "is_nominal": True, "is_base": False
             }]
+        # No valid path at all
         return []
 
+    # Seed for deriving alternatives
     seed = nominal if nominal_ok else base
 
-    # --- Pool aufbauen (nominal immer rein, wenn zulässig) ---
+    # Build initial pool (always include nominal if it is valid)
     pool: List[List[int]] = []
     if nominal_ok and nominal:
         pool.append(nominal)
-
-    # base IMMER hinzufügen, wenn existent und verschieden
     if base and (not nominal_ok or base != nominal):
         pool.append(base)
 
-    # Alternativen nur dann unterdrücken, wenn ausdrücklich gewünscht
+    # Only add alternates if not restricted by policy
     dets: List[List[int]] = []
     ksps: List[List[int]] = []
     if not (only_when_blocked and nominal_ok):
@@ -376,46 +427,44 @@ def candidates_for_line_scenario(
             ksps = [p for p in _yen_ksp(model, adj, src, dst, ksp_count) if p and p != seed]
             pool += ksps
 
-    before = len(pool)
-    pool = _unique_paths(pool)
-    
+    # Deduplicate by arc sequences
+    pool = _unique_paths(pool) or []
 
+    # If empty (very unlikely), fall back to base
     if not pool:
         pool = [base]
 
+    # Ensure nominal is at the front if it exists
     if nominal_ok:
         for i, p in enumerate(pool):
             if p == nominal and i != 0:
                 pool.insert(0, pool.pop(i))
                 break
 
-    
+    def plen(p: List[int]) -> float:
+        return sum(_arc_length(model, a) for a in p)
 
-    def plen(p): return sum(_arc_length(model, a) for a in p)
-
+    # Reference for corridor filtering
     ref_path = nominal if nominal_ok else (base if base else [])
     L_ref = plen(ref_path) if ref_path else float("inf")
 
     def within_corr(p: List[int]) -> bool:
         return True if corr_eps is None else (plen(p) <= (1.0 + float(corr_eps)) * L_ref)
 
-    # --- EINZIGE Filterrunde: Korridor + Diversität + Limit ---
+    # Single filtering pass: corridor + diversity + optional cap
     filtered: List[List[int]] = []
     for p in pool:
         if within_corr(p) and _edge_diversity_ok(p, filtered, min_edge_diff):
             filtered.append(p)
 
-
     if not filtered:
         filtered = [nominal] if nominal_ok else [base]
 
-    
-
-    # Label-Sets (nur wenn Alternativen gesucht wurden)
+    # Label sets to mark origins of each kept path
     detour_set = set(map(tuple, dets)) if dets else set()
     ksp_set    = set(map(tuple, ksps)) if ksps else set()
 
-    # Ausgabestruktur
+    # Build output dicts (compute add/rem/delta vs nominal set)
     out: List[Dict] = []
     ref_set = nominal_set
     for p in filtered:
@@ -446,7 +495,10 @@ def candidates_for_line_scenario(
             "is_base": is_base,
         })
 
-    
+    # Optional cap
+    if max_candidates_per_line is not None and len(out) > int(max_candidates_per_line):
+        out = out[:int(max_candidates_per_line)]
+
     return out
 
 
@@ -458,10 +510,11 @@ def _mirror_candidates_for_line(
     ell_bwd: int,
 ) -> List[Dict]:
     """
-    Spiegelt Kandidaten einer Vorwärts-Linie auf die Rückwärts-Linie:
-    - Arc-Sequenz wird rückwärts gelesen und jeder Arc via rev[a] invertiert.
-    - Kosten (add/rem/delta) werden ggü. dem NOMINAL der Rückwärtslinie berechnet.
-    - Falls ein rev[a] fehlt oder Arc im Szenario gesperrt ist, wird der betreffende Kandidat verworfen.
+    Mirror forward-line candidates to a backward line:
+
+    - Reverse the arc sequence and map each arc via rev[a].
+    - Recompute add/rem/delta vs. the backward line's *nominal* path.
+    - Drop mirrored candidates if any reverse arc is missing or not allowed in s.
     """
     allowed = allowed_arcs_forward(model, s)
     _, _, nominal_bwd = _line_endpoints(model, ell_bwd)
@@ -499,12 +552,14 @@ def _mirror_candidates_for_line(
             "delta_len_nom": delta,
             "kind": kind,
             "is_nominal": bool(is_nom),
-            "is_base": False,  # 'base' nur wenn man auch die base-Berechnung gespiegelt prüft
+            "is_base": False,  # we don’t re-check “base” for the mirrored variant
         })
     return mirrored
 
 
-# --------------------------- Public Entry Point ---------------------------
+# ---------------------------------------------------------------------------
+# Public entry points
+# ---------------------------------------------------------------------------
 
 def build_candidates_all_scenarios_per_line(
     model,
@@ -522,22 +577,23 @@ def build_candidates_all_scenarios_per_line(
     corr_eps: Optional[float] = None,
 ) -> Dict[int, Dict[int, List[Dict]]]:
     """
-    Erzeugt candidates[s][ell] = Liste von Kandidaten für Linie ell im Szenario s.
+    Build candidates for all scenarios and all directed lines.
 
-    Parameter:
-      - ksp_weight_mode: "length" (nur Länge) oder "composite" (Länge + Replan-Penalty)
-      - w_len, w_repl, gamma_ksp: Gewichte für die KSP-Gewichtsfunktion
-      - only_when_blocked: nur Alternativen erzeugen, wenn nominal im Szenario verletzt
-      - min_edge_diff: Diversitäts-Schwelle (# unterschiedlicher Kanten)
-      - max_candidates_per_line: Obergrenze je Linie
-      - mirror_backward: Kandidaten der Vorwärtslinie auf Rückwärtslinie spiegeln und
-                         den nominalen BWD (falls zulässig) zusätzlich behalten
-      - corr_eps: Korridor (max. relative Längenzunahme ggü. Referenz)
+    Returns:
+        candidates[s][ell] -> List[Dict] (see candidates_for_line_scenario)
+
+    Notes:
+    - The current API only exposes `mirror_backward` as a boolean. A more
+      expressive mirror mode (“auto|force|off”) is hinted in code but not
+      passed through publicly. Keeping behavior identical to existing code.
+      (TODO: Plumb a proper `mirror_mode` parameter if needed.)
     """
     rev = _rev_map(model)
     S   = len(model.p_s)
     results: Dict[int, Dict[int, List[Dict]]] = {}
-    mirror_mode = locals().get("mirror_mode", "auto")  # "auto" | "force" | "off"
+
+    # Internal “mirror_mode” is currently “auto” only — retained for compatibility.
+    mirror_mode = "auto"  # kept to preserve the original guard logic
 
     groups = getattr(model, "line_group_to_lines", None)
 
@@ -545,14 +601,13 @@ def build_candidates_all_scenarios_per_line(
         per_line: Dict[int, List[Dict]] = {}
 
         if mirror_backward and isinstance(groups, dict):
+            # Treat forward/backward line pair as a unit to optionally mirror candidates.
             for g, pair in groups.items():
                 ell_fwd, ell_bwd = pair
 
-                allowed = allowed_arcs_forward(model, s)
-
-                # 1) Beide Richtungen unabhängig generieren
-                cand_fwd_gen = []
-                cand_bwd_gen = []
+                # 1) Independently generate for both directions (unless “force” mirroring was intended).
+                cand_fwd_gen: List[Dict] = []
+                cand_bwd_gen: List[Dict] = []
                 if ell_fwd is not None and ell_fwd >= 0 and mirror_mode != "force":
                     cand_fwd_gen = candidates_for_line_scenario(
                         model, s, int(ell_fwd),
@@ -576,18 +631,18 @@ def build_candidates_all_scenarios_per_line(
                         corr_eps=corr_eps,
                     )
 
-                # 2) Beidseitig spiegeln
-                cand_fwd_mir = []
-                cand_bwd_mir = []
+                # 2) Mirror both ways
+                cand_fwd_mir: List[Dict] = []
+                cand_bwd_mir: List[Dict] = []
                 if ell_fwd is not None and ell_fwd >= 0 and cand_bwd_gen:
                     cand_fwd_mir = _mirror_candidates_for_line(model, s, cand_bwd_gen, rev, int(ell_fwd))
                 if ell_bwd is not None and ell_bwd >= 0 and cand_fwd_gen:
                     cand_bwd_mir = _mirror_candidates_for_line(model, s, cand_fwd_gen, rev, int(ell_bwd))
 
-                # 3) Pro Richtung: nominal immer beibehalten, union + dedup + limit
+                # 3) For each direction: always include nominal (if allowed) + union + dedup + optional cap
                 if ell_fwd is not None and ell_fwd >= 0:
-                    out_fwd = []
-                    if _nominal_ok(model, s, int(ell_fwd), allowed):
+                    out_fwd: List[Dict] = []
+                    if _nominal_ok(model, s, int(ell_fwd), allowed_arcs_forward(model, s)):
                         out_fwd.append(_mk_nominal_candidate(model, int(ell_fwd)))
                     out_fwd += cand_fwd_mir + cand_fwd_gen
                     out_fwd = _uniq_keep_order(out_fwd)
@@ -596,8 +651,8 @@ def build_candidates_all_scenarios_per_line(
                     per_line[int(ell_fwd)] = out_fwd
 
                 if ell_bwd is not None and ell_bwd >= 0:
-                    out_bwd = []
-                    if _nominal_ok(model, s, int(ell_bwd), allowed):
+                    out_bwd: List[Dict] = []
+                    if _nominal_ok(model, s, int(ell_bwd), allowed_arcs_forward(model, s)):
                         out_bwd.append(_mk_nominal_candidate(model, int(ell_bwd)))
                     out_bwd += cand_bwd_mir + cand_bwd_gen
                     out_bwd = _uniq_keep_order(out_bwd)
@@ -605,7 +660,7 @@ def build_candidates_all_scenarios_per_line(
                         out_bwd = out_bwd[:int(max_candidates_per_line)]
                     per_line[int(ell_bwd)] = out_bwd
         else:
-            # Unabhängig je Linie
+            # Independent per directed line (no mirroring)
             for ell in range(model.L):
                 per_line[int(ell)] = candidates_for_line_scenario(
                     model, s, int(ell),
@@ -622,7 +677,16 @@ def build_candidates_all_scenarios_per_line(
 
     return results
 
+
 def build_candidates_all_scenarios_per_line_cfg(model, cand_cfg, main_cfg):
+    """
+    Convenience wrapper: read weights and policy knobs from CandidateConfig + main Config (dict-like).
+
+    Mirrors original behavior:
+    - If cand_cfg.w_len / w_repl is None, mirror from main_cfg (line_operation_cost_mult / cost_repl_line).
+    - mirror_backward boolean is derived from cand_cfg.mirror_backward != "off".
+      (Note: a potential “force” mode is *not* passed through; behavior unchanged.)
+    """
     def _get(cfg, key, default):
         try:
             return getattr(cfg, key)
@@ -647,6 +711,6 @@ def build_candidates_all_scenarios_per_line_cfg(model, cand_cfg, main_cfg):
         only_when_blocked=bool(cand_cfg.generate_only_if_disrupted),
         min_edge_diff=int(cand_cfg.div_min_edges),
         max_candidates_per_line=int(cand_cfg.max_candidates_per_line),
-        mirror_backward=(mirror_mode != "off"),
+        mirror_backward=(mirror_mode != "off"),  # “force” is not wired through here (unchanged behavior).
         corr_eps=corr,
     )

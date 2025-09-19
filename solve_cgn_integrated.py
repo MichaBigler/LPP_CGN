@@ -4,8 +4,7 @@ import os
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
-from prepare_cgn import make_cgn
-from prepare_cgn_candidates import make_cgn_with_candidates_per_line
+from prepare_cgn import make_cgn, make_cgn_with_candidates_per_line
 from find_candidates import build_candidates_all_scenarios_per_line_cfg
 from optimisation import (
     od_pairs, add_flow_conservation, add_flow_conservation_by_origin,
