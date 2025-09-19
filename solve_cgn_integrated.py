@@ -4,95 +4,114 @@ import os
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
+
 from prepare_cgn import make_cgn, make_cgn_with_candidates_per_line
 from find_candidates import build_candidates_all_scenarios_per_line_cfg
 from optimisation import (
-    od_pairs, add_flow_conservation, add_flow_conservation_by_origin,
+    od_pairs, add_flow_conservation, add_flow_conservation_by_origin,  # imported for parity; not used here
     add_passenger_capacity, add_infrastructure_capacity,
-    build_obj_invehicle, build_obj_invehicle_with_overdemand, build_obj_bypass, build_obj_waiting, build_obj_operating, build_obj_operating_with_candidates_per_line, set_objective,
+    build_obj_invehicle, build_obj_invehicle_with_overdemand, build_obj_bypass, build_obj_waiting,
+    build_obj_operating, build_obj_operating_with_candidates_per_line, set_objective,  # set_objective not used here
     add_frequency_grouped,
     add_candidate_choice_per_line,
     add_passenger_capacity_with_candidates_per_line,
     add_infrastructure_capacity_with_candidates_per_line,
     add_path_replanning_cost_linear_per_line,
 )
-
 from solve_utils import (
     _cand_counts, _freq_values_from_config, _routing_is_aggregated,
     _waiting_mode, _line_lengths, _group_lengths, _rep_line_of_group, _add_flows
 )
 from data_model import CandidateConfig
 
-def _debug_print_candidates_lines(cand_all_lines: dict[int, dict[int, list[dict]]],
-                                  *, max_lines: int = 3, max_examples: int = 2) -> None:
-    """Knackige Übersicht pro Szenario / Linie."""
-    for s, per_line in cand_all_lines.items():
 
+def _debug_print_candidates_lines(
+    cand_all_lines: dict[int, dict[int, list[dict]]],
+    *,
+    max_lines: int = 3,
+    max_examples: int = 2
+) -> None:
+    """
+    Short, human-readable dump: per scenario, show how many candidates exist per line
+    and print a few examples with type/length/delta-length.
+    """
+    for s, per_line in cand_all_lines.items():
         shown = 0
         for ell, lst in per_line.items():
             if not lst:
                 continue
             print(f"  line {ell}: {len(lst)} candidates", end="")
-            # Beispiele
+            # examples
             ex = []
             for k, c in enumerate(lst[:max_examples]):
                 kind = c.get("kind", "?")
                 L = c.get("len", 0.0)
                 d = c.get("delta_len_nom", c.get("add_len", 0.0) + c.get("rem_len", 0.0))
                 ex.append(f"k={k}:{kind}, len={L:.2f}, Δ={d:.2f}")
-            if ex:
-                print(" | " + "  ".join(ex))
-            else:
-                print()
+            print(" | " + "  ".join(ex) if ex else "")
             shown += 1
             if shown >= max_lines:
                 break
 
 
-# ---------- TWO-STAGE INTEGRATED (joint) ----------
+# ---------- TWO-STAGE INTEGRATED (joint model: stage-1 + all stage-2 in one MIP) ----------
 
 def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
+    """
+    Integrated two-stage solver:
+      - Stage 1 (nominal): base CGN, grouped frequency choice, global infra cap, routing.
+      - Stage 2 (for all scenarios at once): candidate CGNs per scenario, grouped frequency choice,
+        candidate selection, capacities & costs, plus frequency & path replanning penalties.
+      - Objective combines stage-1 cost + scenario-weighted stage-2 cost + replanning terms.
 
-
+    Returns:
+      (m, solution, artifacts)
+        m          : the joint Gurobi model
+        solution   : summary with per-scenario costs/frequencies and expected values
+        artifacts  : CGNs, flow variables/mappings, lengths and candidate bookkeeping for logging
+    """
+    # Root model
     m = gp.Model("LPP_TWO_STAGE_INTEGRATED")
     m.Params.Threads = os.cpu_count()
 
-    # Kandidaten (per Linie, per Szenario)
-    detour_cnt, ksp_cnt = _cand_counts(domain)
-    cand_cfg = getattr(domain, "cand_cfg", None)
-    if cand_cfg is None:
-        
-        cand_cfg = CandidateConfig()  # Fallback-Defaults
-
+    # -------- Candidate generation (per line, per scenario) --------
+    # Use attached CandidateConfig if present; otherwise fall back to defaults.
+    detour_cnt, ksp_cnt = _cand_counts(domain)  # counts are baked into domain config; here only for visibility
+    cand_cfg = getattr(domain, "cand_cfg", None) or CandidateConfig()
     cand_all_lines = build_candidates_all_scenarios_per_line_cfg(model, cand_cfg, domain.config)
     _debug_print_candidates_lines(cand_all_lines, max_lines=4, max_examples=2)
 
-    # Nominal-CGN (Stage 1)
-    cgn = make_cgn(model)
+    # -------- Shared knobs --------
     freq_vals = _freq_values_from_config(domain)
     aggregated = _routing_is_aggregated(domain, override=domain.config.get("routing_agg", True))
     wait_freq = _waiting_mode(domain)
-
     S = len(model.p_s)
+
+    # lengths grouped by line/group (for operating and replanning weights)
     line_len = _line_lengths(model)
     glen = _group_lengths(model, line_len)
-    rep = _rep_line_of_group(model)
+    rep = _rep_line_of_group(model)  # group representative line index
 
-    # group -> [lines]
+    # group -> [lines in this group] (both directions when present)
     lines_by_group = {
         g: [ell for ell in (fwd, bwd) if ell is not None and ell >= 0]
         for g, (fwd, bwd) in model.line_group_to_lines.items()
     }
 
-    # ---------- Stage 1 ----------
+    # =================================================================
+    # Stage 1 (nominal CGN)
+    # =================================================================
+    cgn = make_cgn(model)
     x0, arc_to_keys = _add_flows(m, model, cgn, aggregated)
     z0, delta0, f0_expr, h0_expr = add_frequency_grouped(m, model, freq_vals)
 
+    # capacities (vehicles & infra)
     Q = int(domain.config.get("train_capacity", 200))
     add_passenger_capacity(m, model, cgn, x0, f0_expr, arc_to_keys, Q=Q)
     cap_std = int(domain.config.get("infrastructure_capacity", 10))
     add_infrastructure_capacity(m, model, f0_expr, cap_std=cap_std)
 
+    # costs (with overdemand hinge)
     tau = float(domain.config.get("overdemand_threshold", 1.0))
     mu  = float(domain.config.get("overdemand_multiplier", 1.0))
     time0_base_raw, time0_over_raw = build_obj_invehicle_with_overdemand(
@@ -100,71 +119,70 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
     )
     time0_total = time0_base_raw + max(mu - 1.0, 0.0) * time0_over_raw
     bypass0 = build_obj_bypass(m, model, cgn, x0, arc_to_keys)
-    wait0, y0 = build_obj_waiting(
-        m, model, cgn, x0, arc_to_keys, freq_vals, delta0,  # must be delta0
+    wait0, _y0 = build_obj_waiting(
+        m, model, cgn, x0, arc_to_keys, freq_vals, delta0,
         include_origin_wait=True, waiting_time_frequency=wait_freq
     )
     oper0, _ = build_obj_operating(model, f0_expr)
 
-    # ---------- Stage 2 (pro Szenario) ----------
+    # =================================================================
+    # Stage 2 (one CGN per scenario, all embedded in the same model)
+    # =================================================================
     xs, arcs_to_s = [], []
     bypass_s = []
     zs, deltas, f_expr_s, y_s, time_s, wait_s, oper_s = [], [], [], [], [], [], []
     repl_path_s = []
     time_base_s, time_over_s = [], []
-    cgn_s_list = []
-    x_s_list = []
-    arc_to_keys_s_list = []
+    cgn_s_list, x_s_list, arc_to_keys_s_list = [], [], []
 
     c_repl_line = float(domain.config.get("cost_repl_line", 0.0))
     c_repl_freq = float(domain.config.get("cost_repl_freq", 0.0))
 
     for s in range(S):
-        
-        # CGN mit per-Linie-Kandidaten (Szenario s)
+        # Build CGN with per-line candidates (scenario s)
         cgn_s = make_cgn_with_candidates_per_line(model, cand_all_lines[s])
 
         xi, arc_toi = _add_flows(m, model, cgn_s, aggregated)
         cgn_s_list.append(cgn_s)
         x_s_list.append(xi)
         arc_to_keys_s_list.append(arc_toi)
+
         zs_i, delta_i, f_expr_i, h_expr_i = add_frequency_grouped(m, model, freq_vals)
 
-        # Gruppen ohne Kandidaten deaktivieren
+        # For groups without any candidate lines in this scenario, force off
         for g, Lg in lines_by_group.items():
             has_any = any(cand_all_lines[s].get(ell) for ell in Lg)
             if not has_any:
                 m.addConstr(zs_i[g] == 0, name=f"noCand_forceOff[g{g},s{s}]")
 
-        # Kandidaten-Auswahl: y[(ell,k)] und Kopplung an z_g (in der Funktion)
+        # Candidate selection per line (coupled to z_g inside the helper)
         y_i = add_candidate_choice_per_line(m, model, zs_i, cand_all_lines[s], name=f"cand_s{s}")
 
-        # Kapazitäten mit Kandidaten-Gates
+        # Replace capacities with candidate-aware versions
         add_passenger_capacity_with_candidates_per_line(
-            m, model, cgn_s, xi, f_expr_i, arc_toi, Q, y_i,
-            name=f"pass_cap_s{s}",
+            m, model, cgn_s, xi, f_expr_i, arc_toi, Q, y_i, name=f"pass_cap_s{s}"
         )
         add_infrastructure_capacity_with_candidates_per_line(
             m, model, f_expr_i, y_i, cand_all_lines[s],
             cap_per_arc=model.cap_sa[s, :], name=f"infra_s{s}"
         )
 
-        # Kosten
+        # Cost buckets in scenario s
         ti_base_raw, ti_over_raw = build_obj_invehicle_with_overdemand(
             m, model, cgn_s, xi, arc_toi, f_expr_i, Q, threshold=tau, multiplier=mu, use_t_min_time=True
         )
         ti_total = ti_base_raw + max(mu - 1.0, 0.0) * ti_over_raw
         bi = build_obj_bypass(m, model, cgn_s, xi, arc_toi)
-        wi, yi_wait = build_obj_waiting(
+        wi, _yi_wait = build_obj_waiting(
             m, model, cgn_s, xi, arc_toi, freq_vals, delta_i,
             include_origin_wait=True, waiting_time_frequency=wait_freq
         )
-        oi   = build_obj_operating_with_candidates_per_line(model, f_expr_i, y_i, cand_all_lines[s])
+        oi = build_obj_operating_with_candidates_per_line(model, f_expr_i, y_i, cand_all_lines[s])
 
-        # Pfad-Replanning (linear, per Linie): freq(s) * (add_len + rem_len)
+        # Path replanning (per line): freq_s * (add_len + rem_len) of chosen candidate
         repl_path = add_path_replanning_cost_linear_per_line(
             m, model,
-            y=y_i,                                 # <- statt y_line=y_i
+            y=y_i,
             candidates_per_line=cand_all_lines[s],
             f_expr=f_expr_i,
             cost_repl_line=c_repl_line,
@@ -175,29 +193,33 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
         xs.append(xi); arcs_to_s.append(arc_toi)
         zs.append(zs_i); deltas.append(delta_i); f_expr_s.append(f_expr_i)
         y_s.append(y_i); time_s.append(ti_total); wait_s.append(wi); oper_s.append(oi)
-        # keep components for logging
+
+        # keep components for reporting
         time_base_s.append(ti_base_raw)
         time_over_s.append(ti_over_raw)
-        bypass_s.append(bi)   # ensure you defined: bypass_s = []
+        bypass_s.append(bi)
         repl_path_s.append(repl_path)
 
-    # Frequenz-Replanning: d_{g,s} >= | f_g^(s) - f_g^(0) |
+    # =================================================================
+    # Frequency replanning: d_{g,s} >= | f_g^(s) - f_g^(0) |
+    # =================================================================
     d = {}
     for s in range(S):
         for g, ell_rep in rep.items():
             if ell_rep is None:
                 continue
             d[g, s] = m.addVar(lb=0.0, name=f"d[g{g},s{s}]")
-            m.addConstr(d[g, s] >= f_expr_s[s][ell_rep] - f0_expr[ell_rep],  name=f"d_pos[g{g},s{s}]")
+            m.addConstr(d[g, s] >=  f_expr_s[s][ell_rep] - f0_expr[ell_rep],   name=f"d_pos[g{g},s{s}]")
             m.addConstr(d[g, s] >= -(f_expr_s[s][ell_rep] - f0_expr[ell_rep]), name=f"d_neg[g{g},s{s}]")
 
-    # Gewichte
+    # =================================================================
+    # Objective: stage-1 + expected stage-2 (no repl) + path repl + freq repl
+    # =================================================================
     time_w = float(domain.config.get("travel_time_cost_mult", 1.0))
     wait_w = float(domain.config.get("waiting_time_cost_mult", 1.0))
     op_w   = float(domain.config.get("line_operation_cost_mult", 1.0))
-    p = model.p_s  # numpy array
+    p = model.p_s  # numpy array of scenario probabilities
 
-    # Ziel: Stage1 + Erwartungswert Stage2 (ohne Repl) + Pfad-Repl + Frequenz-Repl
     stage1_obj = time_w * time0_total + bypass0 + wait_w * wait0 + op_w * oper0
 
     stage2_norepl_exp = gp.quicksum(
@@ -212,7 +234,7 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
 
     m.setObjective(stage1_obj + stage2_norepl_exp + repl_path_exp + repl_freq_exp, GRB.MINIMIZE)
 
-    # Params
+    # Solver params
     if gurobi_params:
         for k, v in gurobi_params.items():
             setattr(m.Params, k, v)
@@ -229,7 +251,10 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
 
     m.optimize()
 
-    # Auswahl y → pro Linie
+    # =================================================================
+    # Decode selections and frequencies
+    # =================================================================
+    # Selected candidate per line in each scenario
     selected = {}
     for s in range(S):
         chosen = {}
@@ -238,21 +263,25 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
                 chosen[int(ell)] = int(k)
         selected[s] = chosen
 
-    # Frequenzen decodieren
+    # Helper: decode per-line frequencies from delta variables
     def _decode(delta_map):
         out = {}
         for ell in range(model.L):
             f = 0
             for r, _ in enumerate(freq_vals):
                 if delta_map[(ell, r)].X > 0.5:
-                    f = freq_vals[r]; break
+                    f = freq_vals[r]
+                    break
             out[ell] = f
         return out
 
-    chosen_freq0 = _decode(delta0)
-    chosen_freq_s = [ _decode(deltas[s]) for s in range(S) ]
+    chosen_freq0 = _decode(delta0)                      # stage-1
+    chosen_freq_s = [_decode(deltas[s]) for s in range(S)]  # per scenario
 
-    # Stage-1 Komponentenkosten (gewichtet)
+    # =================================================================
+    # Build solution & reporting payloads
+    # =================================================================
+    # Weighted stage-1 components (for convenience in logs)
     costs0 = {}
     if m.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT) and m.SolCount > 0:
         v_time0_base_raw = float(time0_base_raw.getValue())
@@ -265,24 +294,25 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
             time=time_w * v_time0_raw,
             time_base=time_w * v_time0_base_raw,
             time_over=time_w * max(mu - 1.0, 0.0) * v_time0_over_raw,
-            bypass=v_bypass0_raw, 
+            bypass=v_bypass0_raw,
             wait=wait_w * v_wait0_raw,
             oper=op_w   * v_oper0_raw,
             objective=time_w * v_time0_raw + v_bypass0_raw + wait_w * v_wait0_raw + op_w * v_oper0_raw,
+            # raw (unweighted)
             time_raw=v_time0_raw, time_base_raw=v_time0_base_raw, time_over_raw=v_time0_over_raw,
-            wait_raw=v_wait0_raw, oper_raw=v_oper0_raw
+            wait_raw=v_wait0_raw, oper_raw=v_oper0_raw,
         )
 
-    # Szenario-Details
+    # Per-scenario aggregates (already inside the joint model)
     scenario_ids = domain.scen_prob_df["id"].astype(int).tolist()
     scenarios = []
     for s in range(S):
         v_time_base = float(time_base_s[s].getValue())
         v_time_over = float(time_over_s[s].getValue())
-        v_time   = float(time_s[s].getValue())  # total inside objective (base + (μ-1)·over)
-        v_bypass = float(bypass_s[s].getValue())
-        v_wait_raw = float(wait_s[s].getValue())
-        v_oper = float(oper_s[s].getValue())
+        v_time      = float(time_s[s].getValue())  # total: base + (μ-1)*over
+        v_bypass    = float(bypass_s[s].getValue())
+        v_wait_raw  = float(wait_s[s].getValue())
+        v_oper      = float(oper_s[s].getValue())
 
         repl_freq_val = sum(float(c_repl_freq) * float(glen[g]) * float(d[g, s].X) for g in glen.keys())
         repl_path_val = float(repl_path_s[s].getValue())
@@ -295,21 +325,23 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
             "cost_time_base":  time_w * v_time_base,
             "cost_time_over":  time_w * max(mu - 1.0, 0.0) * v_time_over,
             "cost_bypass": v_bypass,
-            "cost_wait": wait_w * v_wait_raw,
-            "cost_oper": op_w   * v_oper,
+            "cost_wait":   wait_w * v_wait_raw,
+            "cost_oper":   op_w   * v_oper,
             "cost_repl_freq": repl_freq_val,
             "cost_repl_path": repl_path_val,
             "cost_repl": repl_freq_val + repl_path_val,
+            # raw components
             "cost_time_raw": v_time,
             "cost_time_base_raw": v_time_base,
             "cost_time_over_raw": v_time_over,
             "cost_wait_raw": v_wait_raw,
             "cost_oper_raw": v_oper,
+            # total of weighted pieces (for quick inspection)
             "objective": (time_w * v_time + v_bypass + wait_w * v_wait_raw + op_w * v_oper
                           + repl_freq_val + repl_path_val),
         })
 
-    # Aggregates
+    # Global aggregates
     obj_total = float(m.ObjVal) if m.SolCount else None
     obj_stage1_val = float(stage1_obj.getValue()) if m.SolCount else None
     obj_stage2_exp_val = float((stage2_norepl_exp + repl_path_exp + repl_freq_exp).getValue()) if m.SolCount else None
@@ -324,7 +356,7 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
         chosen_freq_stage2=chosen_freq_s,
         scenarios=scenarios,
         obj_stage1=obj_stage1_val,
-        obj_stage2_exp=obj_stage2_exp_val,      # enthält Replanning (freq + path)
+        obj_stage2_exp=obj_stage2_exp_val,      # includes replanning (freq + path)
         repl_cost_freq_exp=repl_cost_freq_exp_val,
         repl_cost_path_exp=repl_cost_path_exp_val,
         repl_cost_exp=(repl_cost_freq_exp_val or 0.0) + (repl_cost_path_exp_val or 0.0),
@@ -343,4 +375,5 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
         candidates_lines=cand_all_lines,
         cand_selected_lines=selected,
     )
+
     return m, solution, artifacts

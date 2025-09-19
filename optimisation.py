@@ -1,7 +1,8 @@
 # optimisation.py
 # -----------------------------------------------------------------------------
-# Reine Modellbausteine: keine Config- oder I/O-Logik.
-# Alle "Werte" (Kapazitäten, Gewichte) werden von außen hereingegeben.
+# Pure model-building blocks: no config parsing and no I/O here.
+# Every numeric value (capacities, weights, penalties, etc.) is injected
+# from the caller. This keeps modelling code small, testable and reusable.
 # -----------------------------------------------------------------------------
 
 from collections import deque
@@ -11,17 +12,22 @@ import gurobipy as gp
 from prepare_cgn import CGN
 
 
-# --------------------------- Hilfsfunktionen ---------------------------
+# =============================== Utilities ================================
 
 def od_pairs(data) -> List[Tuple[int, int]]:
-    """Liste aller (o,d) mit positiver Nachfrage im Indexraum 0..N-1."""
+    """
+    Enumerate all OD pairs (o, d) with positive demand in index space 0..N-1.
+    """
     return [(o, d) for o in range(data.N) for d in range(data.N) if data.D[o, d] > 0]
+
 
 ODKey = Tuple[int, int]
 OriginKey = int
 FlowKey = Union[ODKey, OriginKey]
 
+
 def _is_od_key(x: object) -> TypeGuard[ODKey]:
+    """Type guard: True if x looks like an OD key tuple (int, int)."""
     return (
         isinstance(x, tuple)
         and len(x) == 2
@@ -31,36 +37,48 @@ def _is_od_key(x: object) -> TypeGuard[ODKey]:
 
 def cgn_reachable_for_od(cgn: CGN, data, o: int, d: int):
     """
-    Erlaube Boarding nur am Origin, Alighting nur am Destination.
-    Gibt (besuchte Knoten, erlaubte Arcs) für dieses OD zurück.
+    Compute the CGN subgraph reachable for OD=(o,d) under:
+      - boarding only allowed at origin ground node,
+      - alighting only allowed at destination ground node.
+
+    Returns:
+        (visited_nodes, allowed_arcs) where
+            visited_nodes is a set of CGN node indices,
+            allowed_arcs   is a set of CGN arc indices.
     """
     start = cgn.ground_of[o]
     goal = cgn.ground_of[d]
+
     seen = [False] * cgn.V
     seen[start] = True
     allowed_arcs = set()
+
     Q = deque([start])
     while Q:
         v = Q.popleft()
         for a in cgn.out_arcs[v]:
             kind = cgn.arc_kind[a]
             w = cgn.arc_head[a]
+
+            # OD-specific boarding/alighting rules:
             if kind == "board" and v != start:
                 continue
             if kind == "alight" and w != goal:
                 continue
+
             allowed_arcs.add(a)
             if not seen[w]:
                 seen[w] = True
                 Q.append(w)
+
     visited_nodes = {i for i, b in enumerate(seen) if b}
     return visited_nodes, allowed_arcs
 
 
 def group_x_keys_by_arc(x: gp.tupledict) -> Dict[int, List[Any]]:
     """
-    Erzeuge Mapping a -> [key,...] für existierende x[a,key].
-    'key' ist (o,d) im OD-Fall oder 'o' im Origin-Aggregat-Fall.
+    Build a mapping arc_id -> [flow_key,...] for existing x[arc_id, key] entries.
+    'key' is (o,d) in OD-mode or 'o' in origin-aggregated mode.
     """
     arc_to_keys: Dict[int, List[Any]] = {}
     for a, key in x.keys():
@@ -68,24 +86,32 @@ def group_x_keys_by_arc(x: gp.tupledict) -> Dict[int, List[Any]]:
     return arc_to_keys
 
 
-# ----------------------------- Flüsse -----------------------------
+# ============================ Flow Conservation ============================
 
 def add_flow_conservation_by_origin(m: gp.Model, data, cgn: CGN):
     """
-    Aggregiertes Routing: eine Commodity pro Origin.
-    Variablen x[a,o]; Flusserhaltung mit Quelle ground(o) und Senken ground(d) für alle d mit D[o,d] > 0.
+    Origin-aggregated routing:
+      - One commodity per origin o, variables x[a, o].
+      - Boarding only at ground(o), alighting only at any ground(d) with D[o,d] > 0.
+      - Flow conservation is enforced on the reachable subgraph per origin.
+
+    Returns:
+        x           : tupledict with variables x[a, o] for allowed arcs
+        arc_to_keys: dict mapping arc_id -> list of origins used in x
     """
-    # Ziele je Origin
+    # valid destinations per origin
     dests = {o: [d for d in range(data.N) if data.D[o, d] > 0] for o in range(data.N)}
     origins = [o for o, L in dests.items() if L]
 
-    # Erreichbarkeit je Origin (Board nur am Origin, Alight nur an beliebigen gültigen Destinationen)
+    # Reachability per origin (board only at origin, alight only at any valid destination)
     def reach_nodes_and_arcs_for_origin(o: int, dest_set: Iterable[int]):
         start = cgn.ground_of[o]
         goal_grounds = {cgn.ground_of[d] for d in dest_set}
+
         seen = [False] * cgn.V
         seen[start] = True
         allowed = set()
+
         Q = deque([start])
         while Q:
             v = Q.popleft()
@@ -100,10 +126,11 @@ def add_flow_conservation_by_origin(m: gp.Model, data, cgn: CGN):
                 if not seen[w]:
                     seen[w] = True
                     Q.append(w)
+
         nodes = {i for i, b in enumerate(seen) if b}
         return nodes, allowed
 
-    # Nur zulässige Schlüssel erzeugen
+    # build variable keys only for allowed arcs
     keys = []
     nodes_by_o: Dict[int, set] = {}
     arcs_by_o: Dict[int, set] = {}
@@ -113,10 +140,9 @@ def add_flow_conservation_by_origin(m: gp.Model, data, cgn: CGN):
         arcs_by_o[o] = arcs
         keys.extend((a, o) for a in arcs)
 
-    # Variablen
     x = m.addVars(keys, lb=0.0, name="x")
 
-    # Flusserhaltung
+    # flow conservation on reachable nodes
     for o in origins:
         rhs = [0.0] * cgn.V
         supply = float(sum(data.D[o, d] for d in dests[o]))
@@ -134,7 +160,7 @@ def add_flow_conservation_by_origin(m: gp.Model, data, cgn: CGN):
                 name=f"flow[v{v},o{o}]",
             )
 
-    # a -> [o,...], für die x[a,o] existiert
+    # a -> [o,...] for which x[a,o] exists
     arc_to_keys: Dict[int, List[int]] = {}
     for a, o in x.keys():
         arc_to_keys.setdefault(a, []).append(o)
@@ -144,12 +170,20 @@ def add_flow_conservation_by_origin(m: gp.Model, data, cgn: CGN):
 
 def add_flow_conservation(m: gp.Model, data, cgn: CGN, K: List[Tuple[int, int]]):
     """
-    Standard-Routing: eine Commodity je OD-Paar.
-    Variablen x[a,(o,d)] nur auf arcs, die für (o,d) erreichbar sind.
+    Standard OD routing:
+      - One commodity per OD pair with positive demand.
+      - Variables x[a,(o,d)] exist only on arcs that are reachable for (o,d).
+
+    Returns:
+        x          : tupledict with variables x[a, (o,d)]
+        od_allowed : dict (o,d) -> set of allowed arcs
+        od_nodes   : dict (o,d) -> set of reachable nodes
+        arc_to_ods : dict arc_id -> list of (o,d) keys present in x
     """
     od_nodes: Dict[Tuple[int, int], set] = {}
     od_allowed: Dict[Tuple[int, int], set] = {}
     keys = []
+
     for (o, d) in K:
         nodes, arcs = cgn_reachable_for_od(cgn, data, o, d)
         od_nodes[(o, d)] = nodes
@@ -158,11 +192,13 @@ def add_flow_conservation(m: gp.Model, data, cgn: CGN, K: List[Tuple[int, int]])
 
     x = m.addVars(keys, lb=0.0, name="x")
 
+    # flow conservation per OD on its reachable nodes
     for (o, d) in K:
         rhs = [0.0] * cgn.V
         dem = float(data.D[o, d])
         rhs[cgn.ground_of[o]] -= dem
         rhs[cgn.ground_of[d]] += dem
+
         nodes = od_nodes[(o, d)]
         allowed = od_allowed[(o, d)]
         for v in nodes:
@@ -177,21 +213,25 @@ def add_flow_conservation(m: gp.Model, data, cgn: CGN, K: List[Tuple[int, int]])
     return x, od_allowed, od_nodes, arc_to_ods
 
 
-# ----------------------------- Frequenzen -----------------------------
-
-
+# ============================== Frequencies ===============================
 
 def add_frequency_grouped(m: gp.Model, model, freq_vals: List[int]):
     """
     Group-coupled frequency choice with on/off per group.
-    - For each group g: z_g ∈ {0,1}, δ_{g,r} ∈ {0,1},  Σ_r δ_{g,r} = z_g
-    - f_g = Σ_r f_r · δ_{g,r},  h_g = Σ_r (1/f_r) · δ_{g,r}
-    - For each line ℓ in group g: f_ℓ := f_g, h_ℓ := h_g
+
+    For each group g:
+      - z_g ∈ {0,1} activates the group,
+      - δ_{g,r} ∈ {0,1} selects exactly one frequency value f_r when z_g=1,
+      - f_g = Σ_r f_r · δ_{g,r},
+      - h_g = Σ_r (1/f_r) · δ_{g,r}.
+
+    Each line ℓ in group g inherits f_ℓ := f_g and h_ℓ := h_g.
+
     Returns:
-      z_g:         gp.tupledict keyed by group id
-      delta_line:  dict keyed by (ℓ, r) to reuse existing waiting-time code
-      f_expr:      dict ℓ -> LinExpr
-      h_expr:      dict ℓ -> LinExpr
+        z_g        : gp.tupledict keyed by group id
+        delta_line : dict keyed by (ℓ, r) (reuse-friendly handle for waiting-time code)
+        f_expr     : dict ℓ -> LinExpr frequency expression
+        h_expr     : dict ℓ -> LinExpr headway expression (1/f)
     """
     groups = sorted(model.line_group_to_lines.keys())
     R = len(freq_vals)
@@ -203,7 +243,7 @@ def add_frequency_grouped(m: gp.Model, model, freq_vals: List[int]):
     delta_g = m.addVars(((g, r) for g in groups for r in range(R)),
                         vtype=gp.GRB.BINARY, name="delta_g")
 
-    # exactly one freq if on; zero if off
+    # exactly one frequency if on; zero if off
     m.addConstrs(
         (gp.quicksum(delta_g[g, r] for r in range(R)) == z_g[g] for g in groups),
         name="pick_or_off_group"
@@ -223,11 +263,13 @@ def add_frequency_grouped(m: gp.Model, model, freq_vals: List[int]):
         f_expr[ell] = f_g[g]
         h_expr[ell] = h_g[g]
         for r in range(R):
-            # reuse existing waiting-time linearisation without touching its signature
+            # Expose per-(ell,r) picks to re-use waiting-time linearisation without changing its API
             delta_line[(ell, r)] = delta_g[g, r]
 
     return z_g, delta_line, f_expr, h_expr
-# ----------------------------- Kapazitäten -----------------------------
+
+
+# ============================== Capacities ================================
 
 def add_passenger_capacity(
     m: gp.Model,
@@ -239,10 +281,10 @@ def add_passenger_capacity(
     Q: int,
 ):
     """
-    Fahrzeugkapazität je Ride-Arc a einer Linie ℓ:
-      Sum_key x[a,key] ≤ Q * f_ℓ
+    Vehicle capacity on ride arcs:
+        sum_key x[a, key] ≤ Q * f_ℓ   for each ride arc a that belongs to line ℓ.
     """
-    # Ride-Arcs pro Linie sammeln
+    # collect ride arcs by line
     ride_arcs_by_line: List[List[int]] = [[] for _ in range(data.L)]
     for a in range(cgn.A):
         if cgn.arc_kind[a] == "ride":
@@ -271,26 +313,31 @@ def add_infrastructure_capacity(
 ):
     """
     Infrastructure capacity per directed infra arc.
-    Use EITHER a global scalar (cap_std) OR per-arc capacities (cap_per_arc).
+
+    Use EITHER:
+      - a global scalar (cap_std), OR
+      - a per-arc array-like (cap_per_arc) of length E_dir.
     If cap_per_arc is provided, it overrides cap_std.
     """
-    # lines per directed infra arc
+    # lines using each directed infra arc
     lines_per_arc: List[List[int]] = [[] for _ in range(data.E_dir)]
     for ell, arc_list in enumerate(data.line_idx_to_arcs):
         for a in arc_list:
             lines_per_arc[a].append(ell)
 
-    # RHS selector
+    # RHS provider
     if cap_per_arc is not None:
         cap_arr = np.asarray(cap_per_arc, dtype=float).reshape(-1)
         if len(cap_arr) != data.E_dir:
             raise ValueError(f"cap_per_arc length {len(cap_arr)} != E_dir {data.E_dir}")
+
         def rhs_a(a: int) -> float:
             return float(cap_arr[a])
     else:
         if cap_std is None:
             raise ValueError("Either cap_std or cap_per_arc must be provided.")
         cap_val = float(cap_std)
+
         def rhs_a(a: int) -> float:
             return cap_val
 
@@ -303,7 +350,7 @@ def add_infrastructure_capacity(
         )
 
 
-# ----------------------------- Kostenblöcke -----------------------------
+# ============================== Cost Blocks ===============================
 
 def build_obj_invehicle(
     m: gp.Model,
@@ -315,7 +362,8 @@ def build_obj_invehicle(
     use_t_min_time: bool = True,
 ):
     """
-    Travel-time bucket (ride arcs only). Bypass is handled by build_obj_bypass().
+    In-vehicle time bucket (ride arcs only).
+    (Bypass arcs are priced separately in build_obj_bypass().)
     """
     time_a = data.t_min_a if use_t_min_time else data.len_a
     ride = [a for a in range(cgn.A) if cgn.arc_kind[a] == "ride"]
@@ -325,6 +373,7 @@ def build_obj_invehicle(
         for key in arc_to_keys.get(a, [])
     )
     return expr
+
 
 def build_obj_invehicle_with_overdemand(
     m: gp.Model,
@@ -340,10 +389,21 @@ def build_obj_invehicle_with_overdemand(
     use_t_min_time: bool = True,
 ):
     """
-    Returns (time_raw, over_raw) as linear expressions.
-    - time_raw = sum_a t_a * sum_keys x[a,key]
-    - over_raw = sum_a t_a * s_a,  s_a >= sum_keys x[a,key] - τ * Q * f_ell(a), s_a >= 0
-    Caller forms total = time_raw + (max(multiplier-1,0)) * over_raw and multiplies by time_w.
+    Over-demand aware in-vehicle time:
+      Returns (time_raw, over_raw) as linear expressions.
+
+      time_raw = Σ_a t_a * (Σ_keys x[a,key])
+      over_raw = Σ_a t_a * s_a,  with
+        s_a ≥ (Σ_keys x[a,key]) - τ * Q * f_ℓ(a)
+        s_a ≥ 0
+
+    Caller forms:
+      total_time = time_raw + max(multiplier-1, 0) * over_raw
+      and multiplies by the time weight externally.
+
+    Args:
+      threshold  τ: fraction of Q·f considered "not overloaded" (e.g. 1.0 → no overcharge).
+      multiplier μ: surcharge factor ≥ 1; if μ==1 or τ==1 no surcharge is applied.
     """
     tau = max(0.0, min(1.0, float(threshold)))
     mu  = float(multiplier)
@@ -361,12 +421,12 @@ def build_obj_invehicle_with_overdemand(
     over_raw = gp.LinExpr(0.0)
 
     if not use_over:
-        # no surcharge; just the base time term
+        # No surcharge; just the base time term
         for a in ride:
             time_raw += float(time_a[cgn.arc_edge[a]]) * flow_sum_on_arc(a)
         return time_raw, over_raw
 
-    # with overdemand hinge
+    # With over-demand hinge
     for a in ride:
         ell = int(cgn.arc_line[a])
         t   = float(time_a[cgn.arc_edge[a]])
@@ -381,20 +441,29 @@ def build_obj_invehicle_with_overdemand(
 
     return time_raw, over_raw
 
+
 def build_obj_bypass(m, data, cgn, x, arc_to_keys):
-    """Bypass cost bucket: sum(len_a * bypass_multiplier * flow) over 'bypass' arcs.
-    Returned value is already 'fully weighted' by bypass_multiplier (no time_w)."""
+    """
+    Bypass cost bucket:
+      Σ bypass_arcs (bypass_multiplier * len_a[infra(a)] * Σ_key x[a,key])
+
+    The returned expression is already “fully weighted” by bypass_multiplier
+    (unlike time/wait/oper which are weighted at the top-level objective).
+    """
     bypass_mult = float(getattr(data, "config", {}).get("bypass_multiplier", -1.0))
     if bypass_mult < 0.0:
         return gp.LinExpr(0.0)
+
     bypass = [a for a in range(cgn.A) if cgn.arc_kind[a] == "bypass"]
     if not bypass:
         return gp.LinExpr(0.0)
+
     return gp.quicksum(
         bypass_mult * float(data.len_a[cgn.arc_edge[a]]) * x[a, key]
         for a in bypass
         for key in arc_to_keys.get(a, [])
     )
+
 
 def build_obj_waiting(
     m, data, cgn, x, arc_to_keys, freq_vals, delta,
@@ -402,15 +471,22 @@ def build_obj_waiting(
     waiting_time_frequency=True
 ):
     """
-    Returns (wait_expr_raw, y_vars_or_None).
+    Waiting-time bucket.
 
-    waiting_time_frequency == True:
-       half-headway via linearisation using selected frequencies per target line.
-       Uses cgn.arc_line_to[a] for board/change arcs.
-    waiting_time_frequency == False:
-       flat penalty: 1.0 * sum flow on change-like arcs (board optional).
+    Returns:
+        (wait_expr_raw, y_vars_or_None)
+
+    Two modes:
+      1) waiting_time_frequency == True:
+         Half-headway linearisation driven by selected frequencies on target lines.
+         Uses cgn.arc_line_to[a] on "board" / "change" arcs to pick the target line.
+         Introduces split variables y[a,r].
+
+      2) waiting_time_frequency == False:
+         Flat penalty: 1.0 per passenger traversing a change-like arc.
+         (Optionally also counts the initial "board" if include_origin_wait==True.)
     """
-    # collect change-like arcs
+    # pick the change-like arcs to charge waiting on
     change_like = [a for a in range(cgn.A) if cgn.arc_kind[a] == "change"]
     if include_origin_wait:
         change_like += [a for a in range(cgn.A) if cgn.arc_kind[a] == "board"]
@@ -421,10 +497,11 @@ def build_obj_waiting(
         )
         return wait_expr_raw, None
 
+    # frequency-driven half-headway: split x[a,*] into y[a,r] by chosen frequency index r
     R = len(freq_vals)
     y = m.addVars(((a, r) for a in change_like for r in range(R)), lb=0.0, name="chg_split")
 
-    # demand per key, supports (o,d) and o
+    # demand per key (supports OD mode and origin-aggregated mode)
     def _dem_for_key(key: object) -> float:
         if isinstance(key, tuple) and len(key) == 2:
             o, d = key
@@ -435,12 +512,12 @@ def build_obj_waiting(
         else:
             raise TypeError(f"Unsupported flow key type: {type(key)} -> {key}")
 
-    # tight Big-M per arc (sum flows on that arc)
+    # tight big-M per arc equals total flow over this arc (by demand)
     M_arc = [0.0] * cgn.A
     for a in change_like:
         M_arc[a] = sum(_dem_for_key(key) for key in arc_to_keys.get(a, []))
 
-    # split constraints and activation by target line ell_to
+    # split constraints and activation by target line ℓ_to
     for a in change_like:
         keys = arc_to_keys.get(a, [])
         m.addConstr(
@@ -451,8 +528,7 @@ def build_obj_waiting(
 
         ell_to = int(cgn.arc_line_to[a])
         if ell_to < 0:
-            # shouldn't happen (we excluded 'alight')
-            # bind y[a,r] = 0 if no target line
+            # Shouldn't happen (we exclude 'alight'): deactivate the split if no target line.
             for r in range(R):
                 m.addConstr(y[a, r] == 0.0, name=f"chg_split_off[a{a},r{r}]")
             continue
@@ -469,16 +545,21 @@ def build_obj_waiting(
 
 def add_candidate_choice_per_line(m, model, z_g, cand_by_line, name="cand_line"):
     """
-    z_g: gp.tupledict group on/off (aus add_frequency_grouped)
-    cand_by_line[ell] = Liste Kandidaten
-    Returns: y_line[(ell,k)] ∈ {0,1},  Sum_k y_line[(ell,k)] = z_g[g(ell)]
+    Add candidate-selection variables per line (direction).
+    For each line ℓ with candidates k=0..K-1:
+        Sum_k y_{ℓ,k} = z_{g(ℓ)}
+
+    This ties the "line on/off" group decision z_g to choosing exactly one
+    candidate path for that line when the group is active.
+
+    Returns:
+        y_line dict with Boolean vars keyed by (ℓ, k)
     """
     y = {}
     for ell, cand_list in cand_by_line.items():
         g = int(model.line_idx_to_group[ell])
         if not cand_list:
-            # keine Kandidaten -> Linie muss aus sein
-            #m.addConstr(z_g[g] == 0, name=f"{name}_force_off[g{g},l{ell}]")
+            # No candidates → leave group logic to other constraints; nothing to add here.
             continue
         vars_ell = []
         for k in range(len(cand_list)):
@@ -492,20 +573,19 @@ def add_passenger_capacity_with_candidates_per_line(
     m, model, cgn, x, f_expr, arc_to_keys, Q, y_line, name="pass_cap"
 ):
     """
-    Für jeden CGN-Ride-Arc r (gehört zu Linie ell und Variante k_r):
-        Sum_{flows auf r} x[r,·]  ≤  Q * f_ell(s) * y_{ell,k_r}
+    Vehicle capacity with candidate gating:
+        For every CGN ride arc r belonging to line ℓ and variant k_r:
+            sum_key x[r, key] ≤ Q * f_ℓ(s) * y_{ℓ, k_r}
 
-    - Damit fließt nur dann etwas auf genau diesem Varianten-Arc, wenn GENAU diese Variante gewählt ist.
-    - f_expr[ell] ist die (Szenario-)Frequenz der Linie ell.
+    This ensures flow can only use the arcs of the chosen candidate variant.
     """
     for r in range(cgn.A):
         if cgn.arc_kind[r] != "ride":
             continue
 
         ell = int(cgn.arc_line[r])
-        k_r = int(cgn.arc_variant[r])   # Variantenindex dieses Ride-Arcs
+        k_r = int(cgn.arc_variant[r])   # candidate (variant) index for this ride arc
 
-        # x ist als (r, key) indiziert; arc_to_keys[r] liefert die flow-keys auf r
         keys = arc_to_keys.get(r, [])
         if not keys:
             continue
@@ -521,7 +601,12 @@ def add_passenger_capacity_with_candidates_per_line(
 def add_infrastructure_capacity_with_candidates_per_line(
     m, model, f_expr, y_line, cand_by_line, cap_per_arc, name="infra_cap"
 ):
-    # Precompute: für jeden infra-Arc a -> Liste von (ell,k), deren Kandidat a enthält
+    """
+    Infrastructure capacity with candidate gating:
+      For each directed infra arc a, sum frequencies of all chosen
+      candidate paths that include a, and bound by cap_per_arc[a].
+    """
+    # Pre-compute coverage: for each infra arc a -> list of (ℓ, k) whose candidate path uses a
     A = int(model.E_dir)
     cover = [[] for _ in range(A)]
     for ell, cand_list in (cand_by_line or {}).items():
@@ -538,15 +623,17 @@ def add_infrastructure_capacity_with_candidates_per_line(
         )
 
 
-
 def build_obj_operating(
     data,
     f_expr: Dict[int, gp.LinExpr],
 ):
     """
-    Betriebsausdruck ohne Gewichtung:
-      Sum_ℓ f_ℓ * (Linienlänge_ℓ)
-    (Gewichtung passiert außen in set_objective via op_w.)
+    Operating cost (unweighted):
+        Σ_ℓ f_ℓ * (infrastructure length of line ℓ)
+
+    The caller applies the outer weight (op_w) when forming the objective.
+    Returns:
+        (oper_expr, line_len_list)
     """
     line_len = [
         float(sum(data.len_a[a] for a in data.line_idx_to_arcs[ell]))
@@ -555,6 +642,7 @@ def build_obj_operating(
     oper_expr = gp.quicksum(f_expr[ell] * line_len[ell] for ell in range(data.L))
     return oper_expr, line_len
 
+
 def build_obj_operating_with_candidates_per_line(
     model,
     f_expr: Dict[int, gp.LinExpr],
@@ -562,53 +650,56 @@ def build_obj_operating_with_candidates_per_line(
     candidates_per_line: Dict[int, List[Dict]],  # {ell: [ {len: ...}, ... ]}
 ):
     """
-    Betriebskosten mit Kandidatenpfaden (per Linie):
-      Sum_ell f_ell * ( Sum_k y_{ell,k} * len_{ell,k} )
+    Operating cost with per-line candidate paths:
+        Σ_ℓ f_ℓ * (Σ_k y_{ℓ,k} * len_{ℓ,k})
+
+    The caller applies the outer weight (op_w) when forming the objective.
     """
     terms = []
     for ell, cand_list in (candidates_per_line or {}).items():
         if not cand_list:
             continue
-        len_expr = gp.quicksum(float(c.get("len", 0.0)) * y_line[ell, k]
-                               for k, c in enumerate(cand_list)
-                               if (ell, k) in y_line)
+        len_expr = gp.quicksum(
+            float(c.get("len", 0.0)) * y_line[ell, k]
+            for k, c in enumerate(cand_list)
+            if (ell, k) in y_line
+        )
         terms.append(f_expr[ell] * len_expr)
     return gp.quicksum(terms) if terms else gp.LinExpr(0.0)
-
 
 
 def add_path_replanning_cost_linear_per_line(
     m: gp.Model,
     model,
-    y: Dict[tuple, gp.Var],                   # y[(ell,k)] ∈ {0,1}
-    candidates_per_line: Dict[int, List[Dict]],  # {ell: [ {arcs,len,add_len,rem_len,delta_len_nom?}, ... ]}
-    f_expr: Dict[int, gp.LinExpr],            # ***Szenario***-Frequenz je Linie ℓ
+    y: Dict[tuple, gp.Var],                     # y[(ell,k)] ∈ {0,1}
+    candidates_per_line: Dict[int, List[Dict]], # {ell: [{arcs,len,add_len,rem_len,delta_len_nom?}, ...]}
+    f_expr: Dict[int, gp.LinExpr],              # scenario frequency f_ℓ(s)
     cost_repl_line: float,
     freq_vals: List[int] | None = None,
     *,
     name: str = "repl_path_line",
 ):
     """
-    Path-Penalty in EINEM Szenario s (pro Linie):
-      Sum_{ell,k} cost_repl_line * (add_len + rem_len)_{ell,k} * (y_{ell,k} * f_ell(s))
+    Linear path-replanning cost within a single scenario s:
 
-    - (add_len + rem_len) ist absoluter Umbau (entfernte + hinzugefügte Kantenlängen),
-      immer relativ zum NOMINALPFAD DIESER LINIE ℓ.
-    - f_ell(s) ist die ***Szenario***-Frequenz dieser Linie.
-    - y_{ell,k} wählt genau einen Kandidaten pro Linie (oder 0, falls Linie aus).
-    - Das Produkt y * f wird via McCormick linearisiert.
+        Σ_{ℓ,k} cost_repl_line * Δ_len_{ℓ,k} * ( y_{ℓ,k} * f_ℓ(s) )
 
-    Rückgabe: LinExpr (Summe der Path-Replanning-Kosten in diesem Szenario).
+    where Δ_len_{ℓ,k} := add_len + rem_len (or provided delta_len_nom),
+    always relative to the nominal path of line ℓ.
+
+    The bilinear term y * f is linearized via standard McCormick envelopes.
+    Returns:
+        LinExpr
     """
-    # obere Schranke für Frequenzen
+    # Upper bound for frequencies to tighten McCormick envelopes
     Fmax = 0.0
     if freq_vals and hasattr(freq_vals, "__iter__"):
         try:
-            Fmax = float(max(freq_vals))   # sicher aus Liste/Tuple/np.array
+            Fmax = float(max(freq_vals))
         except Exception:
             pass
     if Fmax <= 0.0:
-        # Fallback: benutze max_frequency aus dem Model, wenn vorhanden
+        # Fallback: try model.config["max_frequency"], else 10.0
         mf = getattr(model, "config", {}).get("max_frequency", None) if hasattr(model, "config") else None
         try:
             Fmax = float(mf) if mf is not None else 10.0
@@ -619,14 +710,14 @@ def add_path_replanning_cost_linear_per_line(
     for ell, cand_list in (candidates_per_line or {}).items():
         if not cand_list:
             continue
-        # Szenario-Frequenz dieser Linie
+
+        # skip if ℓ has no frequency expression in this scenario
         if ell not in f_expr:
-            # Linie existiert im Szenario nicht (oder wurde entkoppelt) -> nichts addieren
             continue
         Fell = f_expr[ell]
 
         for k, cand in enumerate(cand_list):
-            # Delta-Länge (immer nominal vs. Kandidat). Bevorzugt explizit, sonst add+rem.
+            # Δ_len: prefer explicit delta_len_nom, otherwise add_len + rem_len
             delta_len = float(
                 cand.get("delta_len_nom",
                          float(cand.get("add_len", 0.0)) + float(cand.get("rem_len", 0.0)))
@@ -636,10 +727,10 @@ def add_path_replanning_cost_linear_per_line(
 
             y_ellk = y.get((ell, k))
             if y_ellk is None:
-                # für Sicherheit: überspringen, falls diese Kombination nicht modelliert wurde
+                # not modelled → skip silently
                 continue
 
-            # McCormick-Linearisation von w ≈ Fell * y_ellk
+            # McCormick w ≈ Fell * y_ellk
             w = m.addVar(lb=0.0, ub=Fmax, name=f"{name}_w[l{ell},k{k}]")
             m.addConstr(w <= Fmax * y_ellk,               name=f"{name}_w_le_Fy[l{ell},k{k}]")
             m.addConstr(w <= Fell,                        name=f"{name}_w_le_F[l{ell},k{k}]")
@@ -649,7 +740,8 @@ def add_path_replanning_cost_linear_per_line(
 
     return gp.quicksum(terms) if terms else gp.LinExpr(0.0)
 
-# ----------------------------- Zielfunktion -----------------------------
+
+# ============================== Objective ================================
 
 def set_objective(
     m: gp.Model,
@@ -661,5 +753,8 @@ def set_objective(
     wait_w: float = 1.0,
     op_w: float = 1.0,
 ):
-    """Setze Zielfunktion: time_w * time + wait_w * wait + op_w * oper."""
+    """
+    Convenience wrapper to set:
+        Minimize  time_w * time_expr  +  wait_w * wait_expr  +  op_w * oper_expr
+    """
     m.setObjective(time_w * time_expr + wait_w * wait_expr + op_w * oper_expr, gp.GRB.MINIMIZE)
