@@ -104,14 +104,12 @@ def parse_config_row(cfg_row: dict) -> Config:
         scenario_line_data=scen,
         procedure=cfg_row.get('procedure'),
 
-        optimize_lines=_as_bool(cfg_row.get('optimize_lines'), False),
         routing_agg=_as_bool(cfg_row.get('routing_agg'), False),
-        eliminate_subtours=_as_bool(cfg_row.get('eliminate_subtours'), False),
-        line_repl_allowed=_as_bool(cfg_row.get('line_repl_allowed'), False),
 
         waiting_time_frequency=_as_bool(cfg_row.get('waiting_time_frequency'), True),
 
         gap=_as_float(cfg_row.get('gap'), 0.0),
+        time_limit=_as_int(cfg_row.get('time_limit'), None),
         travel_time_cost_mult=_as_float(cfg_row.get('travel_time_cost_mult'), 1.0),
         waiting_time_cost_mult=_as_float(cfg_row.get('waiting_time_cost_mult'), 1.0),
         line_operation_cost_mult=_as_float(cfg_row.get('line_operation_cost_mult'), 1.0),
@@ -120,8 +118,7 @@ def parse_config_row(cfg_row: dict) -> Config:
         train_capacity=_as_int(cfg_row.get('train_capacity'), 200),
         infrastructure_capacity=_as_int(cfg_row.get('infrastructure_capacity'), 10),
         max_frequency=_as_int(cfg_row.get('max_frequency'), 5),
-        num_scenarios=_as_int(cfg_row.get('num_scenarios'), 1),
-
+        
         cost_repl_freq=_as_float(cfg_row.get('cost_repl_freq'), 0.0),
         cost_repl_line=_as_float(cfg_row.get('cost_repl_line'), 0.0),
         repl_budget=_as_float(cfg_row.get('repl_budget'), 0.0),

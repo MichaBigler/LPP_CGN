@@ -75,16 +75,14 @@ class Config:
 
     # Procedure / switches
     procedure: Optional[str] = None                 # 'one', 'integrated', 'separated', ...
-    optimize_lines: bool = False                    # if False: keep nominal lines
     routing_agg: bool = False                       # aggregated routing (faster; less detail)
-    eliminate_subtours: bool = False                # optional routing sanity constraint
-    line_repl_allowed: bool = False                 # allow line path replacements (stage-2)
 
     # Waiting time model: if True → frequency-dependent waiting, else flat waiting
     waiting_time_frequency: bool = True
 
     # Solver / weighting coefficients
     gap: float = 0.0
+    time_limit: Optional[int] = None
     travel_time_cost_mult: float = 1.0
     waiting_time_cost_mult: float = 1.0
     line_operation_cost_mult: float = 1.0
@@ -94,8 +92,7 @@ class Config:
     train_capacity: int = 200
     infrastructure_capacity: int = 10
     max_frequency: int = 5
-    num_scenarios: int = 1
-
+    
     # Replanning costs/budgets (used in two-stage variants)
     cost_repl_freq: float = 0.0
     cost_repl_line: float = 0.0
