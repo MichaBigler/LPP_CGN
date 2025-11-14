@@ -1,0 +1,15 @@
+source;network;scenario_line_data;procedure;routing_agg;waiting_time_frequency;gap;time_limit;travel_time_cost_mult;waiting_time_cost_mult;line_operation_cost_mult;cost_repl_freq;cost_repl_line;repl_budget;bypass_multiplier;overdemand_threshold;overdemand_multiplier;num_od;train_capacity;infrastructure_capacity;max_frequency;status_code;status;objective;runtime_s;cost_time;cost_time_base;cost_time_over;cost_bypass;cost_wait;cost_oper;obj_stage1;obj_stage2_exp;repl_cost_freq_exp;repl_cost_path_exp;repl_cost_exp
+lintim;SiouxFalls;SiouxFalls;one_stage;True;False;0;3600;1;2;20;1;4;-5;-1;0.75;2;100;50;10;10;2;OPTIMAL;41557.770000000004;10.374000072479248;27088.05;26418.23;669.8199999999997;0.0;5936.520000000002;8533.2;41557.770000000004;;;;
+lintim;SiouxFalls;SiouxFalls;one_stage;True;False;0;3600;1;2;20;3;12;-5;-1;0.75;2;100;50;10;10;2;OPTIMAL;41557.770000000004;10.990000009536743;27088.05;26418.23;669.8199999999997;0.0;5936.520000000002;8533.2;41557.770000000004;;;;
+lintim;SiouxFalls;SiouxFalls;separated;True;False;0;3600;1;2;20;10;40;-5;-1;0.75;2;100;50;10;10;-1;ERROR;;4.428;;;;;;;;;;;
+lintim;SiouxFalls;SiouxFalls;one_stage;True;False;0;3600;1;2;20;10;40;-5;-1;0.75;2;100;50;10;10;11;11;;0.13199996948242188;;;;;;;;;;;
+lintim;SiouxFalls;SiouxFalls;integrated;True;False;0;3600;1;2;20;30;120;-5;-1;0.75;2;100;50;10;10;-1;ERROR;;5.886;;;;;;;;;;;
+lintim;SiouxFalls;SiouxFalls;separated;True;False;0;3600;1;2;20;30;120;-5;-1;0.75;2;100;50;10;10;-1;ERROR;;1.673;;;;;;;;;;;
+lintim;SiouxFalls;SiouxFalls;one_stage;True;False;0;3600;1;2;20;30;120;-5;-1;0.75;2;100;50;10;10;2;OPTIMAL;41557.770000000004;2.121000051498413;27088.05;26418.23;669.8199999999997;0.0;5936.520000000002;8533.2;41557.770000000004;;;;
+lintim;SiouxFalls;SiouxFalls;integrated;True;False;0;3600;1;2;20;100;400;-5;-1;0.75;2;100;50;10;10;-1;ERROR;;4.609;;;;;;;;;;;
+lintim;SiouxFalls;SiouxFalls;separated;True;False;0;3600;1;2;20;100;400;-5;-1;0.75;2;100;50;10;10;-1;ERROR;;1.694;;;;;;;;;;;
+lintim;SiouxFalls;SiouxFalls;one_stage;True;False;0;3600;1;2;20;100;400;-5;-1;0.75;2;100;50;10;10;11;11;;0.06399989128112793;;;;;;;;;;;
+lintim;SiouxFalls;SiouxFalls;integrated;True;False;0;3600;1;2;20;300;1200;-5;-1;0.75;2;100;50;10;10;-1;ERROR;;2.148;;;;;;;;;;;
+lintim;SiouxFalls;SiouxFalls;separated;True;False;0;3600;1;2;20;300;1200;-5;-1;0.75;2;100;50;10;10;-1;ERROR;;2.214;;;;;;;;;;;
+lintim;SiouxFalls;SiouxFalls;one_stage;True;False;0;3600;1;2;20;300;1200;-5;-1;0.75;2;100;50;10;10;11;11;;0.19700002670288086;;;;;;;;;;;
+lintim;SiouxFalls;SiouxFalls;integrated;True;False;0;3600;1;2;20;1000;4000;-5;-1;0.75;2;100;50;10;10;-1;ERROR;;7.262;;;;;;;;;;;
