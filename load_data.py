@@ -89,11 +89,15 @@ def _cfg_key(d: dict, name: str) -> str:
 def _resolve_scenario_file(scen_dir: str, base_name: str, file_id: Optional[int]) -> str:
     """Try numbered file first, fall back to default if not found."""
     if file_id:
+        # first try main scenario directory
         numbered = os.path.join(scen_dir, f"{base_name}_{file_id}.csv")
         if os.path.exists(numbered):
             return numbered
-        else:
-            print(f"[WARN] Could not find '{base_name}_{file_id}.csv', falling back to '{base_name}.csv'")
+        # then try generated subfolder
+        numbered_gen = os.path.join(scen_dir, "generated", f"{base_name}_{file_id}.csv")
+        if os.path.exists(numbered_gen):
+            return numbered_gen
+        print(f"[WARN] Could not find '{base_name}_{file_id}.csv', falling back to '{base_name}.csv'")
     return os.path.join(scen_dir, f"{base_name}.csv")
 
 def _parse_cap(cap_val, cap_std: float) -> float:
