@@ -373,10 +373,11 @@ class RunBatchLogger:
         arc_to_keys: dict | None = None,
         filename_suffix: str = "",
         aggregate_undirected: bool = False,
+        links_df=None, #optional: pass domain.links_df for original edge IDs
     ) -> str:
         """
         Write per-edge passenger flows:
-          - edge_id: directed edge id (or undirected id if aggregate_undirected=True)
+          - edge_id: directed edge id (or undirected id if aggregate_undirected=True) or original edge IDs if links_df is passed
           - edge_len: length of the (directed) edge (or first-seen length for undirected aggregate)
           - flow_total: sum of flows over all lines on that edge
           - flow_line_<ell>: line-wise flow contribution
@@ -502,16 +503,38 @@ class RunBatchLogger:
                 len_by_edge[e_key] = L
 
         # --- Write CSV -------------------------------------------------------
+        # Build e_dir -> (original_edge_id, u_id, v_id) lookup for output
+        uv_to_edge_id = {}
+        if links_df is not None:
+            for _, r in links_df.iterrows():
+                a, b, eid = int(r['a']), int(r['b']), int(r['id'])
+                uv_to_edge_id[(a, b)] = eid
+                uv_to_edge_id[(b, a)] = eid
+
+        def _edge_id_and_dir(e_dir: int):
+            try:
+                if idx_to_uv_infra is not None and 0 <= e_dir < len(idx_to_uv_infra):
+                    u_id, v_id = idx_to_uv_infra[e_dir]  # these are already original stop IDs!
+                    if u_id is not None and v_id is not None:
+                        eid = uv_to_edge_id.get((u_id, v_id), e_dir)
+                        return eid, f"{int(u_id)}-{int(v_id)}"
+            except Exception:
+                print(f"[DEBUG] _edge_id_and_dir failed for e_dir={e_dir}:")
+            return e_dir, ""
+
         all_lines = sorted({ell for mp in by_edge_line.values() for ell in mp})
         out_path = os.path.join(self.run_dir(run_index), f"edge_flows{filename_suffix}.csv")
         with open(out_path, "w", newline="", encoding="utf-8") as fh:
             wr = csv.writer(fh, delimiter=";")
-            wr.writerow(["edge_id", "edge_len", "flow_total"] + [f"flow_line_{ell}" for ell in all_lines])
+            wr.writerow(["edge_id", "direction", "edge_len", "flow_total"] + [f"flow_line_{ell}" for ell in all_lines])
 
             # keep stable ordering; works for int or str IDs
             for e_key in sorted(total_by_edge.keys(), key=lambda k: (isinstance(k, str), str(k))):
-                row = [e_key, len_by_edge.get(e_key, 0.0), total_by_edge[e_key]] \
+                eid, direction = _edge_id_and_dir(e_key)
+                row = [eid, direction, len_by_edge.get(e_key, 0.0), total_by_edge[e_key]] \
                       + [by_edge_line[e_key].get(ell, 0.0) for ell in all_lines]
                 wr.writerow(row)
+
+
 
         return out_path

@@ -259,6 +259,7 @@ def main():
                     artifacts["cgn_stage1"], artifacts["x_stage1"],
                     arc_to_keys=artifacts.get("arc_to_keys_stage1"),
                     filename_suffix="_stage1",
+                    links_df=domain.links_df
                 )
 
             # Stage 2 per scenario
@@ -271,6 +272,7 @@ def main():
                     i, model, cgn_s, x_s,
                     arc_to_keys=a2k_s,
                     filename_suffix=f"_stage2_{s}",
+                    links_df=domain.links_df
                 )
 
             # Console summary
