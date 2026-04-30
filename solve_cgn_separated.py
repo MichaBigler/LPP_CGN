@@ -239,6 +239,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         m.optimize()
         print(
             f"------------------------------------------------- Solved second stage for scenario {s} ------------------------------------------------------")
+        gap_s = m.MIPGap if m.SolCount > 0 else None
 
         # ----------------------------- Extract flows (flatten to per-arc) -----------------------------
         A = len(cgn.arc_kind)
@@ -342,6 +343,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         per_s.append(dict(
             status=int(m.Status),
             objective=obj_val,                   # includes time_w + wait_w + op_w + repl + repl_path
+            opt_gap=gap_s,
             chosen_freq=chosen,
             cost_time=time_w_val,
             cost_time_base=time_base_w,
@@ -408,11 +410,19 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
     # If obj2_exp is not defined, then we define the total objective as None
     total_objective = (sol0["costs_0"]["objective"] + obj2_exp) if obj2_exp is not None else None
 
+    # Get worst gap - where if one model did not find any solution, then gap should be None
+    if any(per_s[s]["opt_gap"] is None for s in range(S)) or sol0.get("opt_gap") is None:
+        worst_gap = None
+    else:
+        gaps = [per_s[s]["opt_gap"] for s in range(S)]
+        gaps.append(sol0["opt_gap"])
+        worst_gap = max(gaps)
+
     solution = dict(
         status_code=int(sol0["status_code"]),
         status=sol0["status"],
         runtime_s=sol0.get("runtime_s"),
-        opt_gap=m.MIPGap,
+        opt_gap=worst_gap,
         chosen_freq_stage1=chosen_freq0,
         chosen_freq_stage2=[ps["chosen_freq"] for ps in per_s],
         scenarios=scenarios,
