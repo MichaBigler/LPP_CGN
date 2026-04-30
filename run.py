@@ -19,6 +19,7 @@ import os
 import time
 import traceback
 import pandas as pd
+import shutil
 
 from load_data import load_and_build, load_candidate_config
 from solve_cgn_one_stage import solve_one_stage
@@ -149,6 +150,11 @@ def main():
             )
             setattr(domain, "cand_cfg", cand_cfg)
 
+            # Copy scenario files to run output folder
+            run_folder = logger.run_dir(i)
+            shutil.copy(domain.props["scenario_infra_file"], os.path.join(run_folder, "scenario_infra_used.csv"))
+            shutil.copy(domain.props["scenario_prob_file"], os.path.join(run_folder, "scenario_prob_used.csv"))
+
             # ----- 2) Solve according to procedure -----
             proc = str(domain.config.get("procedure", "one")).lower()
             if proc in ("one", "one_stage"):
@@ -171,6 +177,7 @@ def main():
                     "status": _status_name(solution.get("status")),
                     "objective": solution.get("objective"),
                     "runtime_s": solution.get("runtime_s"),
+                    "opt_gap": solution.get("opt_gap"),
                     "cost_time": nom.get("time"),
                     "cost_time_base": nom.get("time_base"),
                     "cost_time_over": nom.get("time_over"),
@@ -204,6 +211,7 @@ def main():
                     "status": _status_name(solution.get("status")),
                     "objective":      solution.get("objective"),
                     "runtime_s":      solution.get("runtime_s"),
+                    "opt_gap":        solution.get("opt_gap"),
                     "cost_time":      agg_time,
                     "cost_time_base": agg_time_base,
                     "cost_time_over": agg_time_over,

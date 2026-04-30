@@ -89,9 +89,11 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         - solution includes stage-1 summary, expected stage-2 objective and per-scenario breakdowns.
         - artifacts include CGNs and flows (flattened to per-arc) for logging.
     """
+    print("**************************************************** About to Solve first stage ****************************************************")
     # ----------------------------- Stage 1 -----------------------------
     m0, sol0, art0 = solve_one_stage(domain, model, gurobi_params=gurobi_params)
-
+    print(
+        "**************************************************** Solved first stage ****************************************************")
     # Flatten nominal flows to per-arc for logging downstream
     cgn0 = art0["cgn_stage1"]
     x0   = art0["x_stage1"]
@@ -139,7 +141,10 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
     arc_to_keys_s_list = []
 
     # ----------------------------- Stage 2 (per scenario) -----------------------------
+    print(
+        "**************************************************** Preparing the scenarios ****************************************************")
     for s in range(S):
+        print(f"------------------------------------------------- Preparing model for scneario {s} ------------------------------------------------------")
         m = gp.Model(f"LPP_TWO_STAGE_S{str(s)}")
         m.Params.Threads = os.cpu_count()
 
@@ -229,7 +234,11 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         elif "gap" in domain.config:
             m.Params.MIPGap = float(domain.config["gap"])
 
+        print(
+            f"------------------------------------------------- Solving second stage for scenario {s} ------------------------------------------------------")
         m.optimize()
+        print(
+            f"------------------------------------------------- Solved second stage for scenario {s} ------------------------------------------------------")
 
         # ----------------------------- Extract flows (flatten to per-arc) -----------------------------
         A = len(cgn.arc_kind)
@@ -288,16 +297,15 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         x_s_list[-1] = x_by_arc
         arc_to_keys_s_list[-1] = {}
 
-        # Selected candidate per line
+        # Selected candidate per line and Chosen frequencies in scenario s (per line)
+        # added into if so no error occurs in case no solution found
         chosen_k = {}
-        for (ell, k), var in y.items():
-            if var.X > 0.5:
-                chosen_k[int(ell)] = int(k)
-        selected[s] = chosen_k  # {ell: k}
-
-        # Chosen frequencies in scenario s (per line)
         chosen = {}
-        if m.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT):
+        if m.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT) and m.SolCount > 0:
+            for (ell, k), var in y.items():
+                if var.X > 0.5:
+                    chosen_k[int(ell)] = int(k)
+
             for ell in range(model.L):
                 f = 0
                 for r, _ in enumerate(freq_vals):
@@ -305,6 +313,9 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
                         f = freq_vals[r]
                         break
                 chosen[ell] = f
+
+        selected[s] = chosen_k  # {ell: k}
+
 
         # Component values
         time_val       = float(time.getValue()) if m.SolCount else None
@@ -391,6 +402,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         status_code=int(sol0["status_code"]),
         status=sol0["status"],
         runtime_s=sol0.get("runtime_s"),
+        opt_gap=m.MIPGap,
         chosen_freq_stage1=chosen_freq0,
         chosen_freq_stage2=[ps["chosen_freq"] for ps in per_s],
         scenarios=scenarios,

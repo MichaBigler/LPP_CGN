@@ -157,6 +157,7 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
         status=m.Status,
         objective=costs0.get("objective"),
         runtime_s=getattr(m, "Runtime", None),
+        opt_gap=m.MIPGap,
         chosen_freq=chosen_freq0,
         costs_0=costs0
     )
