@@ -362,15 +362,22 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         ))
 
     # ----------------------------- Expected values over scenarios -----------------------------
-    obj2_exp = 0.0
-    repl_cost_freq_exp = 0.0
-    repl_cost_path_exp = 0.0
-    for s in range(S):
-        if per_s[s]["objective"] is not None:
-            obj2_exp += float(p[s]) * float(per_s[s]["objective"])
-        repl_cost_freq_exp += float(p[s]) * float(per_s[s].get("cost_repl_freq") or 0.0)
-        repl_cost_path_exp += float(p[s]) * float(per_s[s].get("cost_repl_path") or 0.0)
-    repl_cost_exp = repl_cost_freq_exp + repl_cost_path_exp
+    # only if a solution exists for all scenarios compute (associated) 2nd stage costs
+    if any(per_s[s]["objective"] is None for s in range(S)):
+        obj2_exp = None
+        repl_cost_freq_exp = None
+        repl_cost_path_exp = None
+        repl_cost_exp = None
+    else:
+        obj2_exp = 0.0
+        repl_cost_freq_exp = 0.0
+        repl_cost_path_exp = 0.0
+        for s in range(S):
+            if per_s[s]["objective"] is not None:
+                obj2_exp += float(p[s]) * float(per_s[s]["objective"])
+            repl_cost_freq_exp += float(p[s]) * float(per_s[s].get("cost_repl_freq") or 0.0)
+            repl_cost_path_exp += float(p[s]) * float(per_s[s].get("cost_repl_path") or 0.0)
+        repl_cost_exp = repl_cost_freq_exp + repl_cost_path_exp
 
     # ----------------------------- Assemble per-scenario details -----------------------------
     scenario_ids = domain.scen_prob_df["id"].astype(int).tolist()
@@ -398,6 +405,9 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
     ) for s in range(S)]
 
     # ----------------------------- Return payloads -----------------------------
+    # If obj2_exp is not defined, then we define the total objective as None
+    total_objective = (sol0["costs_0"]["objective"] + obj2_exp) if obj2_exp is not None else None
+
     solution = dict(
         status_code=int(sol0["status_code"]),
         status=sol0["status"],
@@ -411,7 +421,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         repl_cost_freq_exp=repl_cost_freq_exp,
         repl_cost_path_exp=repl_cost_path_exp,
         repl_cost_exp=repl_cost_exp,
-        objective=sol0["costs_0"]["objective"] + obj2_exp,
+        objective=total_objective,
         costs_0=sol0.get("costs_0"),
     )
 
