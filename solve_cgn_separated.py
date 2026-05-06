@@ -1,6 +1,7 @@
 # solve_cgn_separated.py
 import os
 import numpy as np
+import math
 import gurobipy as gp
 from gurobipy import GRB
 from prepare_cgn import make_cgn_with_candidates_per_line
@@ -91,6 +92,12 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
     """
     # ----------------------------- Stage 1 -----------------------------
     m0, sol0, art0 = solve_one_stage(domain, model, gurobi_params=gurobi_params)
+
+    # If no first-stage solution found, then nothing after this has to be computed
+    if math.isinf(sol0.get("opt_gap")) or m0.SolCount == 0:
+        print("[WARN] Stage-1 found no solution, skipping stage-2.")
+        return None, sol0, art0
+
 
     # Flatten nominal flows to per-arc for logging downstream
     cgn0 = art0["cgn_stage1"]
@@ -288,16 +295,15 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         x_s_list[-1] = x_by_arc
         arc_to_keys_s_list[-1] = {}
 
-        # Selected candidate per line
+        # Selected candidate per line and Chosen frequencies in scenario s (per line)
+        # added into if so no error occurs in case no solution found
         chosen_k = {}
-        for (ell, k), var in y.items():
-            if var.X > 0.5:
-                chosen_k[int(ell)] = int(k)
-        selected[s] = chosen_k  # {ell: k}
-
-        # Chosen frequencies in scenario s (per line)
         chosen = {}
-        if m.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT):
+        if m.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT) and m.SolCount > 0:
+            for (ell, k), var in y.items():
+                if var.X > 0.5:
+                    chosen_k[int(ell)] = int(k)
+
             for ell in range(model.L):
                 f = 0
                 for r, _ in enumerate(freq_vals):
@@ -305,6 +311,9 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
                         f = freq_vals[r]
                         break
                 chosen[ell] = f
+
+        selected[s] = chosen_k  # {ell: k}
+
 
         # Component values
         time_val       = float(time.getValue()) if m.SolCount else None
@@ -331,6 +340,8 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         per_s.append(dict(
             status=int(m.Status),
             objective=obj_val,                   # includes time_w + wait_w + op_w + repl + repl_path
+            opt_gap=m.MIPGap,
+            runtime_s=getattr(m, "Runtime", None),
             chosen_freq=chosen,
             cost_time=time_w_val,
             cost_time_base=time_base_w,
@@ -351,15 +362,22 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         ))
 
     # ----------------------------- Expected values over scenarios -----------------------------
-    obj2_exp = 0.0
-    repl_cost_freq_exp = 0.0
-    repl_cost_path_exp = 0.0
-    for s in range(S):
-        if per_s[s]["objective"] is not None:
-            obj2_exp += float(p[s]) * float(per_s[s]["objective"])
-        repl_cost_freq_exp += float(p[s]) * float(per_s[s].get("cost_repl_freq") or 0.0)
-        repl_cost_path_exp += float(p[s]) * float(per_s[s].get("cost_repl_path") or 0.0)
-    repl_cost_exp = repl_cost_freq_exp + repl_cost_path_exp
+    # only if a solution exists for all scenarios compute (associated) 2nd stage costs
+    if any(per_s[s]["objective"] is None for s in range(S)):
+        obj2_exp = None
+        repl_cost_freq_exp = None
+        repl_cost_path_exp = None
+        repl_cost_exp = None
+    else:
+        obj2_exp = 0.0
+        repl_cost_freq_exp = 0.0
+        repl_cost_path_exp = 0.0
+        for s in range(S):
+            if per_s[s]["objective"] is not None:
+                obj2_exp += float(p[s]) * float(per_s[s]["objective"])
+            repl_cost_freq_exp += float(p[s]) * float(per_s[s].get("cost_repl_freq") or 0.0)
+            repl_cost_path_exp += float(p[s]) * float(per_s[s].get("cost_repl_path") or 0.0)
+        repl_cost_exp = repl_cost_freq_exp + repl_cost_path_exp
 
     # ----------------------------- Assemble per-scenario details -----------------------------
     scenario_ids = domain.scen_prob_df["id"].astype(int).tolist()
@@ -387,10 +405,27 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
     ) for s in range(S)]
 
     # ----------------------------- Return payloads -----------------------------
+    # If obj2_exp is not defined, then we define the total objective as None
+    total_objective = (sol0["costs_0"]["objective"] + obj2_exp) if obj2_exp is not None else None
+
+    # Get worst gap - where if one model did not find any solution, then gap should be None
+    if any(math.isinf(per_s[s]["opt_gap"]) for s in range(S)):
+        worst_gap = float("inf")
+    else:
+        gaps = [per_s[s]["opt_gap"] for s in range(S)]
+        gaps.append(sol0["opt_gap"])
+        worst_gap = max(gaps)
+
+    # Get total runtime
+    stage1_runtime = sol0.get("runtime_s") or 0.0
+    stage2_runtimes = [per_s[s]["runtime_s"] or 0.0 for s in range(S)]
+    total_runtime = stage1_runtime + sum(stage2_runtimes)
+
     solution = dict(
         status_code=int(sol0["status_code"]),
         status=sol0["status"],
-        runtime_s=sol0.get("runtime_s"),
+        runtime_s=total_runtime,
+        opt_gap=worst_gap,
         chosen_freq_stage1=chosen_freq0,
         chosen_freq_stage2=[ps["chosen_freq"] for ps in per_s],
         scenarios=scenarios,
@@ -399,7 +434,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         repl_cost_freq_exp=repl_cost_freq_exp,
         repl_cost_path_exp=repl_cost_path_exp,
         repl_cost_exp=repl_cost_exp,
-        objective=sol0["costs_0"]["objective"] + obj2_exp,
+        objective=total_objective,
         costs_0=sol0.get("costs_0"),
     )
 

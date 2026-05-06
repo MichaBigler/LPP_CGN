@@ -114,7 +114,7 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
     # ----------------------------- Decode decisions -----------------------------
     # Per-line frequency (inherits its group selection via delta0[(ell,r)])
     chosen_freq0 = {}
-    if m.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT):
+    if m.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT) and m.SolCount > 0:
         for ell in range(model.L):
             f = 0
             for r, _ in enumerate(freq_vals):
@@ -157,6 +157,7 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
         status=m.Status,
         objective=costs0.get("objective"),
         runtime_s=getattr(m, "Runtime", None),
+        opt_gap=m.MIPGap,
         chosen_freq=chosen_freq0,
         costs_0=costs0
     )

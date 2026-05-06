@@ -13,8 +13,7 @@ import time
 import traceback
 import argparse
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
+import shutil
 
 from load_data import load_and_build, load_candidate_config
 from solve_cgn_one_stage import solve_one_stage
@@ -135,8 +134,66 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
                 "repl_cost_exp": None,
             })
 
-            # Frequenzen/Wege (auch im 1-Stufen-Fall mit leerer Szenarienliste)
-            with log_lock:
+    for i, cfg_row in cfg_df.iterrows():
+        tag = f"{cfg_row['source']}/{cfg_row['network']}@{cfg_row['scenario_line_data']}"
+        print(f"\n\n##### RUN {i}: {tag} #####")
+        t0 = time.time()
+
+        # Prepare base row for base_log.csv (contains all config columns)
+        base_row = logger.base_row_template(cfg_row)
+
+        try:
+            # ----- 1) Load data & build model -----
+            domain, model = load_and_build(
+                data_root=data_root,
+                cfg_row=cfg_row.to_dict(),
+                symmetrise_infra=False,
+                zero_od_diagonal=False,
+            )
+            setattr(domain, "cand_cfg", cand_cfg)
+
+            # Copy scenario files to run output folder
+            run_folder = logger.run_dir(i)
+            shutil.copy(domain.props["scenario_infra_file"], os.path.join(run_folder, "scenario_infra_used.csv"))
+            shutil.copy(domain.props["scenario_prob_file"], os.path.join(run_folder, "scenario_prob_used.csv"))
+
+            # ----- 2) Solve according to procedure -----
+            proc = str(domain.config.get("procedure", "one")).lower()
+            if proc in ("one", "one_stage"):
+                m, solution, artifacts = solve_one_stage(domain, model)
+            elif proc in ("integrated", "joint"):
+                m, solution, artifacts = solve_two_stage_integrated(domain, model)
+            elif proc in ("separated", "sequential"):
+                m, solution, artifacts = solve_two_stage_separated(domain, model)
+            else:
+                print(f"[WARN] unknown procedure '{proc}', falling back to one_stage")
+                m, solution, artifacts = solve_one_stage(domain, model)
+
+            # Normalize artifact keys so the rest of the script is solver-agnostic
+            artifacts = _normalize_artifacts(artifacts)
+
+            # ----- 3) Aggregate KPIs & fill base row -----
+            if proc in ("one", "one_stage"):
+                nom = solution.get("costs_0") or {}
+                base_row.update({
+                    "status": _status_name(solution.get("status")),
+                    "objective": solution.get("objective"),
+                    "runtime_s": solution.get("runtime_s"),
+                    "opt_gap": solution.get("opt_gap"),
+                    "cost_time": nom.get("time"),
+                    "cost_time_base": nom.get("time_base"),
+                    "cost_time_over": nom.get("time_over"),
+                    "cost_bypass": nom.get("bypass"),
+                    "cost_wait": nom.get("wait"),
+                    "cost_oper": nom.get("oper"),
+                    "obj_stage1": nom.get("objective"),
+                    "obj_stage2_exp": None,
+                    "repl_cost_freq_exp": None,
+                    "repl_cost_path_exp": None,
+                    "repl_cost_exp": None,
+                })
+
+                # Frequencies + paths header even for one-stage (scenarios=[])
                 logger.write_freqs_two_stage(
                     i, model,
                     nominal=(solution.get("chosen_freq")
@@ -148,26 +205,29 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
                     nominal_costs=solution.get("costs_0"),
                 )
 
-        else:
-            agg_time, agg_time_base, agg_time_over, agg_bypass, agg_wait, agg_oper = _agg_components_two_stage(solution)
-            base_row.update({
-                "status": _status_name(solution.get("status")),
-                "objective":      solution.get("objective"),
-                "runtime_s":      solution.get("runtime_s"),
-                "cost_time":      agg_time,
-                "cost_time_base": agg_time_base,
-                "cost_time_over": agg_time_over,
-                "cost_bypass":    agg_bypass,
-                "cost_wait":      agg_wait,
-                "cost_oper":      agg_oper,
-                "obj_stage1":     solution.get("obj_stage1"),
-                "obj_stage2_exp": solution.get("obj_stage2_exp"),
-                "repl_cost_freq_exp": solution.get("repl_cost_freq_exp"),
-                "repl_cost_path_exp": solution.get("repl_cost_path_exp"),
-                "repl_cost_exp":      solution.get("repl_cost_exp"),
-            })
+            else:
+                # Properly aggregate (includes base/over split and bypass)
+                agg_time, agg_time_base, agg_time_over, agg_bypass, agg_wait, agg_oper = _agg_components_two_stage(solution)
 
-            with log_lock:
+                base_row.update({
+                    "status": _status_name(solution.get("status")),
+                    "objective":      solution.get("objective"),
+                    "runtime_s":      solution.get("runtime_s"),
+                    "opt_gap":        solution.get("opt_gap"),
+                    "cost_time":      agg_time,
+                    "cost_time_base": agg_time_base,
+                    "cost_time_over": agg_time_over,
+                    "cost_bypass":    agg_bypass,
+                    "cost_wait":      agg_wait,
+                    "cost_oper":      agg_oper,
+                    "obj_stage1":     solution.get("obj_stage1"),
+                    "obj_stage2_exp": solution.get("obj_stage2_exp"),
+                    "repl_cost_freq_exp": solution.get("repl_cost_freq_exp"),
+                    "repl_cost_path_exp": solution.get("repl_cost_path_exp"),
+                    "repl_cost_exp":      solution.get("repl_cost_exp"),
+                })
+
+                # Wide frequency CSV incl. nominal costs and scenario paths
                 logger.write_freqs_two_stage(
                     i, model,
                     nominal=solution.get("chosen_freq_stage1", {}) or {},
@@ -199,6 +259,7 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
                     artifacts["cgn_stage1"], artifacts["x_stage1"],
                     arc_to_keys=artifacts.get("arc_to_keys_stage1"),
                     filename_suffix="_stage1",
+                    links_df=domain.links_df
                 )
 
             cgn_s_list = artifacts.get("cgn_stage2_list") or []
@@ -210,6 +271,7 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
                     i, model, cgn_s, x_s,
                     arc_to_keys=a2k_s,
                     filename_suffix=f"_stage2_{s}",
+                    links_df=domain.links_df
                 )
 
         # Console summary

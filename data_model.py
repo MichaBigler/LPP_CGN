@@ -72,6 +72,8 @@ class Config:
     source: str
     network: str
     scenario_line_data: str
+    scenario_infra_id: Optional[int] = None  # if set, loads scenario_infra_<id>.csv
+    scenario_prob_id: Optional[int] = None  # if set, loads scenario_prob_<id>.csv
 
     # Procedure / switches
     procedure: Optional[str] = None                 # 'one', 'integrated', 'separated', ...

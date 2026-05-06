@@ -25,6 +25,19 @@ from solve_utils import (
 from data_model import CandidateConfig
 
 
+# Helper: decode per-line frequencies from delta variables
+def _decode(model, freq_vals, delta_map):
+    out = {}
+    for ell in range(model.L):
+        f = 0
+        for r, _ in enumerate(freq_vals):
+            if delta_map[(ell, r)].X > 0.5:
+                f = freq_vals[r]
+                break
+        out[ell] = f
+    return out
+
+
 def _debug_print_candidates_lines(
     cand_all_lines: dict[int, dict[int, list[dict]]],
     *,
@@ -254,34 +267,22 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
     # =================================================================
     # Decode selections and frequencies
     # =================================================================
-    # Selected candidate per line in each scenario
+    # Selected candidate per line in each scenario - set up, rest in
+    # safeguard to make sure we have at least one solution
     selected = {}
-    for s in range(S):
-        chosen = {}
-        for (ell, k), var in y_s[s].items():
-            if var.X > 0.5:
-                chosen[int(ell)] = int(k)
-        selected[s] = chosen
-
-    # Helper: decode per-line frequencies from delta variables
-    def _decode(delta_map):
-        out = {}
-        for ell in range(model.L):
-            f = 0
-            for r, _ in enumerate(freq_vals):
-                if delta_map[(ell, r)].X > 0.5:
-                    f = freq_vals[r]
-                    break
-            out[ell] = f
-        return out
-
-    chosen_freq0 = _decode(delta0)                      # stage-1
-    chosen_freq_s = [_decode(deltas[s]) for s in range(S)]  # per scenario
-
+    chosen_freq0 = {}
+    chosen_freq_s = {}
     # =================================================================
     # Build solution & reporting payloads
     # =================================================================
     # Weighted stage-1 components (for convenience in logs)
+    # Most things are inside if in case no solution is find to not get errors
+    scenarios = []
+    obj_total = None
+    obj_stage1_val = None
+    obj_stage2_exp_val = None
+    repl_cost_path_exp_val = None
+    repl_cost_freq_exp_val = None
     costs0 = {}
     if m.Status in (GRB.OPTIMAL, GRB.TIME_LIMIT) and m.SolCount > 0:
         v_time0_base_raw = float(time0_base_raw.getValue())
@@ -302,44 +303,53 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
             time_raw=v_time0_raw, time_base_raw=v_time0_base_raw, time_over_raw=v_time0_over_raw,
             wait_raw=v_wait0_raw, oper_raw=v_oper0_raw,
         )
+        # decode selection
+        for s in range(S):
+            chosen = {}
+            for (ell, k), var in y_s[s].items():
+                if var.X > 0.5:
+                    chosen[int(ell)] = int(k)
+            selected[s] = chosen
+        # decode frequencies
+        chosen_freq0 = _decode(model, freq_vals, delta0)  # stage-1
+        chosen_freq_s = [_decode(model, freq_vals, deltas[s]) for s in range(S)]  # per scenario
 
-    # Per-scenario aggregates (already inside the joint model)
-    scenario_ids = domain.scen_prob_df["id"].astype(int).tolist()
-    scenarios = []
-    for s in range(S):
-        v_time_base = float(time_base_s[s].getValue())
-        v_time_over = float(time_over_s[s].getValue())
-        v_time      = float(time_s[s].getValue())  # total: base + (μ-1)*over
-        v_bypass    = float(bypass_s[s].getValue())
-        v_wait_raw  = float(wait_s[s].getValue())
-        v_oper      = float(oper_s[s].getValue())
+        # Per-scenario aggregates (already inside the joint model)
+        scenario_ids = domain.scen_prob_df["id"].astype(int).tolist()
+        for s in range(S):
+            v_time_base = float(time_base_s[s].getValue())
+            v_time_over = float(time_over_s[s].getValue())
+            v_time      = float(time_s[s].getValue())  # total: base + (μ-1)*over
+            v_bypass    = float(bypass_s[s].getValue())
+            v_wait_raw  = float(wait_s[s].getValue())
+            v_oper      = float(oper_s[s].getValue())
 
-        repl_freq_val = sum(float(c_repl_freq) * float(glen[g]) * float(d[g, s].X) for g in glen.keys())
-        repl_path_val = float(repl_path_s[s].getValue())
+            repl_freq_val = sum(float(c_repl_freq) * float(glen[g]) * float(d[g, s].X) for g in glen.keys())
+            repl_path_val = float(repl_path_s[s].getValue())
 
-        scenarios.append({
-            "id": int(scenario_ids[s]),
-            "prob": float(model.p_s[s]),
-            "freq": chosen_freq_s[s],
-            "cost_time":       time_w * v_time,
-            "cost_time_base":  time_w * v_time_base,
-            "cost_time_over":  time_w * max(mu - 1.0, 0.0) * v_time_over,
-            "cost_bypass": v_bypass,
-            "cost_wait":   wait_w * v_wait_raw,
-            "cost_oper":   op_w   * v_oper,
-            "cost_repl_freq": repl_freq_val,
-            "cost_repl_path": repl_path_val,
-            "cost_repl": repl_freq_val + repl_path_val,
-            # raw components
-            "cost_time_raw": v_time,
-            "cost_time_base_raw": v_time_base,
-            "cost_time_over_raw": v_time_over,
-            "cost_wait_raw": v_wait_raw,
-            "cost_oper_raw": v_oper,
-            # total of weighted pieces (for quick inspection)
-            "objective": (time_w * v_time + v_bypass + wait_w * v_wait_raw + op_w * v_oper
-                          + repl_freq_val + repl_path_val),
-        })
+            scenarios.append({
+                "id": int(scenario_ids[s]),
+                "prob": float(model.p_s[s]),
+                "freq": chosen_freq_s[s],
+                "cost_time":       time_w * v_time,
+                "cost_time_base":  time_w * v_time_base,
+                "cost_time_over":  time_w * max(mu - 1.0, 0.0) * v_time_over,
+                "cost_bypass": v_bypass,
+                "cost_wait":   wait_w * v_wait_raw,
+                "cost_oper":   op_w   * v_oper,
+                "cost_repl_freq": repl_freq_val,
+                "cost_repl_path": repl_path_val,
+                "cost_repl": repl_freq_val + repl_path_val,
+                # raw components
+                "cost_time_raw": v_time,
+                "cost_time_base_raw": v_time_base,
+                "cost_time_over_raw": v_time_over,
+                "cost_wait_raw": v_wait_raw,
+                "cost_oper_raw": v_oper,
+                # total of weighted pieces (for quick inspection)
+                "objective": (time_w * v_time + v_bypass + wait_w * v_wait_raw + op_w * v_oper
+                              + repl_freq_val + repl_path_val),
+            })
 
     # Global aggregates
     obj_total = float(m.ObjVal) if m.SolCount else None
@@ -352,6 +362,7 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
         status_code=int(m.Status),
         status=m.Status,
         runtime_s=getattr(m, "Runtime", None),
+        opt_gap = m.MIPGap,
         chosen_freq_stage1=chosen_freq0,
         chosen_freq_stage2=chosen_freq_s,
         scenarios=scenarios,

@@ -86,6 +86,28 @@ def _cfg_key(d: dict, name: str) -> str:
             return k
     raise KeyError(f"Missing '{name}' in config row")
 
+def _resolve_scenario_file(scen_dir: str, base_name: str, file_id: Optional[int]) -> str:
+    """Try numbered file first, fall back to default if not found."""
+    if file_id:
+        # first try main scenario directory
+        numbered = os.path.join(scen_dir, f"{base_name}_{file_id}.csv")
+        if os.path.exists(numbered):
+            return numbered
+        # then try generated subfolder
+        numbered_gen = os.path.join(scen_dir, "generated", f"{base_name}_{file_id}.csv")
+        if os.path.exists(numbered_gen):
+            return numbered_gen
+        print(f"[WARN] Could not find '{base_name}_{file_id}.csv', falling back to '{base_name}.csv'")
+    return os.path.join(scen_dir, f"{base_name}.csv")
+
+def _parse_cap(cap_val, cap_std: float) -> float:
+    """Parse the capacity - either take the capacity or if it
+    begins with * then multiply it with cap_std"""
+    s = str(cap_val).strip()
+    if s.startswith('*'):
+        return float(s[1:]) * cap_std
+    return float(s)
+
 # ============================================================================
 # Config row parsing
 # ============================================================================
@@ -102,6 +124,8 @@ def parse_config_row(cfg_row: dict) -> Config:
         source=src,
         network=net,
         scenario_line_data=scen,
+        scenario_infra_id=_as_int(cfg_row.get('scenario_infra_id'), None),
+        scenario_prob_id=_as_int(cfg_row.get('scenario_prob_id'), None),
         procedure=cfg_row.get('procedure'),
 
         routing_agg=_as_bool(cfg_row.get('routing_agg'), False),
@@ -201,7 +225,7 @@ def read_scenario_infra_csv(path: str) -> pd.DataFrame:
     """
     df = pd.read_csv(_must(path), sep=';')
     df = df.rename(columns={'left-stop': 'u', 'right-stop': 'v', 'infrastructure_capacity': 'cap'})
-    return df.astype({'scenario': int, 'u': int, 'v': int, 'cap': int})
+    return df.astype({'scenario': int, 'u': int, 'v': int, 'cap': str})
 
 # ============================================================================
 # Builders: compact model structures
@@ -287,16 +311,16 @@ def build_scenario_capacities(
     cap_sa = np.full((S, E_dir), float(cap_std), dtype=np.float64)
     for _, r in scen_infra_df.iterrows():
         s = scen_id_to_idx[int(r['scenario'])]
-        u, v, cap = int(r['u']), int(r['v']), float(r['cap'])
+        u, v, cap = int(r['u']), int(r['v']), r['cap']
         if (u, v) in arc_uv_to_idx:
             # Legacy behavior: write to (v, u)
-            cap_sa[s, arc_uv_to_idx[(v, u)]] = float(cap)
+            cap_sa[s, arc_uv_to_idx[(v, u)]] = _parse_cap(cap, cap_std)
 
             # If you intended to write to (u, v), use the next line instead:
-            # cap_sa[s, arc_uv_to_idx[(u, v)]] = float(cap)
+            # cap_sa[s, arc_uv_to_idx[(u, v)]] = float(_parse_cap(cap, cap_std))
 
         if symmetrise_infra and (v, u) in arc_uv_to_idx:
-            cap_sa[s, arc_uv_to_idx[(v, u)]] = float(cap)
+            cap_sa[s, arc_uv_to_idx[(v, u)]] = float(_parse_cap(cap, cap_std))
 
     np.maximum(cap_sa, 0.0, out=cap_sa)
     return cap_sa
@@ -410,8 +434,11 @@ def load_and_build(
     od_df    = read_od_giv(  os.path.join(net_dir, "OD.giv"))
 
     lines    = read_lines_csv(         os.path.join(scen_dir, "lines.csv"))
-    scen_p   = read_scenario_prob_csv( os.path.join(scen_dir, "scenario_prob.csv"))
-    scen_i   = read_scenario_infra_csv(os.path.join(scen_dir, "scenario_infra.csv"))
+
+    infra_path = _resolve_scenario_file(scen_dir, "scenario_infra", cfg.scenario_infra_id)
+    prob_path = _resolve_scenario_file(scen_dir, "scenario_prob", cfg.scenario_prob_id)
+    scen_p   = read_scenario_prob_csv( prob_path)
+    scen_i   = read_scenario_infra_csv(infra_path)
 
     # 4) optionally keep only top-N positive-demand OD pairs
     if cfg.num_od and cfg.num_od > 0:
@@ -433,6 +460,8 @@ def load_and_build(
         props={},                # (kept for compatibility)
         config=cfg.to_dict()
     )
+    domain.props["scenario_infra_file"] = infra_path
+    domain.props["scenario_prob_file"] = prob_path
 
     # 6) model structures
     node_id_to_idx, idx_to_node_id, N = build_node_indexing(domain.stops_df)
