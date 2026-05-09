@@ -1,6 +1,11 @@
 import os
 import pandas as pd
 
+# What to generate
+GENERATE_SCENARIO_INFRA = True
+GENERATE_CONFIG = True
+EXCLUDE_EDGES = [30, 16, 23, 17]
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -50,14 +55,24 @@ def generate_scenario_infra_files(edge_giv_path: str, generated_dir: str):
                            names=['id', 'a', 'b', 'length', 't_min', 't_max'])
     edges_df = edges_df.astype({'id': int, 'a': int, 'b': int})
 
-    for _, r in edges_df.iterrows():
+    # Separate excluded edges
+    excluded_edges = edges_df[edges_df['id'].isin(EXCLUDE_EDGES)]
+    normal_edges = edges_df[~edges_df['id'].isin(EXCLUDE_EDGES)]
+
+    for _, r in normal_edges.iterrows():
         eid = int(r['id'])
         a, b = int(r['a']), int(r['b'])
 
         rows = []
         for cap, scen_id in CAPACITY_LEVELS:
+            # Add the main edge
             rows.append({"scenario": scen_id, "left-stop": a, "right-stop": b, "infrastructure_capacity": cap})
             rows.append({"scenario": scen_id, "left-stop": b, "right-stop": a, "infrastructure_capacity": cap})
+            # Add all excluded edges at the same capacity level
+            for _, excl_r in excluded_edges.iterrows():
+                ea, eb = int(excl_r['a']), int(excl_r['b'])
+                rows.append({"scenario": scen_id, "left-stop": ea, "right-stop": eb, "infrastructure_capacity": cap})
+                rows.append({"scenario": scen_id, "left-stop": eb, "right-stop": ea, "infrastructure_capacity": cap})
 
         df = pd.DataFrame(rows, columns=["scenario", "left-stop", "right-stop", "infrastructure_capacity"])
         out_path = os.path.join(generated_dir, f"scenario_infra_{eid}.csv")
@@ -76,10 +91,13 @@ def generate_config(edge_giv_path: str, config_output: str):
                            names=['id', 'a', 'b', 'length', 't_min', 't_max'])
     edges_df = edges_df.astype({'id': int, 'a': int, 'b': int})
 
+    # Skip excluded edges
+    normal_edges = edges_df[~edges_df['id'].isin(EXCLUDE_EDGES)]
+
     rows = []
-    for _, r in edges_df.iterrows():
+    for _, r in normal_edges.iterrows():
         eid = int(r['id'])
-        for procedure in ("integrated", "separated"):
+        for procedure in ("separated",): #("integrated", "separated")
             for waiting in {False}:
                 row = BASE_CONFIG.copy()
                 row["procedure"] = procedure
@@ -104,8 +122,6 @@ def generate_config(edge_giv_path: str, config_output: str):
     print(f"Generated config.csv with {len(df)} rows at {config_output}")
 
 # Main - configure the files automatically
-GENERATE_SCENARIO_INFRA = False
-GENERATE_CONFIG = True
 
 def main():
     edge_giv_path = os.path.join(NETWORK_DIR, "Edge.giv")

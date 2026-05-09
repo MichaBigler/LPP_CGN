@@ -14,6 +14,8 @@ import traceback
 import argparse
 import pandas as pd
 import shutil
+from threading import Lock
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from load_data import load_and_build, load_candidate_config
 from solve_cgn_one_stage import solve_one_stage
@@ -100,7 +102,12 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
         )
         setattr(domain, "cand_cfg", cand_cfg)
 
-        # ----- 2) Solve -----
+        # Copy scenario files to run output folder
+        run_folder = logger.run_dir(i)
+        shutil.copy(domain.props["scenario_infra_file"], os.path.join(run_folder, "scenario_infra_used.csv"))
+        shutil.copy(domain.props["scenario_prob_file"], os.path.join(run_folder, "scenario_prob_used.csv"))
+
+        # ----- 2) Solve according to procedure -----
         proc = str(domain.config.get("procedure", "one")).lower()
         if proc in ("one", "one_stage"):
             m, solution, artifacts = solve_one_stage(domain, model)
@@ -112,15 +119,18 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
             print(f"[WARN] unknown procedure '{proc}', falling back to one_stage")
             m, solution, artifacts = solve_one_stage(domain, model)
 
+        # Normalize artifact keys so the rest of the script is solver-agnostic
         artifacts = _normalize_artifacts(artifacts)
 
         # ----- 3) KPIs & base_row -----
+        # ----- 3) Aggregate KPIs & fill base row -----
         if proc in ("one", "one_stage"):
             nom = solution.get("costs_0") or {}
             base_row.update({
                 "status": _status_name(solution.get("status")),
                 "objective": solution.get("objective"),
                 "runtime_s": solution.get("runtime_s"),
+                "opt_gap": solution.get("opt_gap"),
                 "cost_time": nom.get("time"),
                 "cost_time_base": nom.get("time_base"),
                 "cost_time_over": nom.get("time_over"),
@@ -134,122 +144,63 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
                 "repl_cost_exp": None,
             })
 
-    for i, cfg_row in cfg_df.iterrows():
-        tag = f"{cfg_row['source']}/{cfg_row['network']}@{cfg_row['scenario_line_data']}"
-        print(f"\n\n##### RUN {i}: {tag} #####")
-        t0 = time.time()
-
-        # Prepare base row for base_log.csv (contains all config columns)
-        base_row = logger.base_row_template(cfg_row)
-
-        try:
-            # ----- 1) Load data & build model -----
-            domain, model = load_and_build(
-                data_root=data_root,
-                cfg_row=cfg_row.to_dict(),
-                symmetrise_infra=False,
-                zero_od_diagonal=False,
+            # Frequencies + paths header even for one-stage (scenarios=[])
+            logger.write_freqs_two_stage(
+                i, model,
+                nominal=(solution.get("chosen_freq")
+                         or solution.get("chosen_freq_stage1")
+                         or artifacts.get("chosen_freq")
+                         or artifacts.get("chosen_freq_stage1")
+                         or {}),
+                scenarios=[],
+                nominal_costs=solution.get("costs_0"),
             )
-            setattr(domain, "cand_cfg", cand_cfg)
 
-            # Copy scenario files to run output folder
-            run_folder = logger.run_dir(i)
-            shutil.copy(domain.props["scenario_infra_file"], os.path.join(run_folder, "scenario_infra_used.csv"))
-            shutil.copy(domain.props["scenario_prob_file"], os.path.join(run_folder, "scenario_prob_used.csv"))
+        else:
+            # Properly aggregate (includes base/over split and bypass)
+            agg_time, agg_time_base, agg_time_over, agg_bypass, agg_wait, agg_oper = _agg_components_two_stage(solution)
 
-            # ----- 2) Solve according to procedure -----
-            proc = str(domain.config.get("procedure", "one")).lower()
-            if proc in ("one", "one_stage"):
-                m, solution, artifacts = solve_one_stage(domain, model)
-            elif proc in ("integrated", "joint"):
-                m, solution, artifacts = solve_two_stage_integrated(domain, model)
-            elif proc in ("separated", "sequential"):
-                m, solution, artifacts = solve_two_stage_separated(domain, model)
-            else:
-                print(f"[WARN] unknown procedure '{proc}', falling back to one_stage")
-                m, solution, artifacts = solve_one_stage(domain, model)
+            base_row.update({
+                "status": _status_name(solution.get("status")),
+                "objective": solution.get("objective"),
+                "runtime_s": solution.get("runtime_s"),
+                "opt_gap": solution.get("opt_gap"),
+                "cost_time": agg_time,
+                "cost_time_base": agg_time_base,
+                "cost_time_over": agg_time_over,
+                "cost_bypass": agg_bypass,
+                "cost_wait": agg_wait,
+                "cost_oper": agg_oper,
+                "obj_stage1": solution.get("obj_stage1"),
+                "obj_stage2_exp": solution.get("obj_stage2_exp"),
+                "repl_cost_freq_exp": solution.get("repl_cost_freq_exp"),
+                "repl_cost_path_exp": solution.get("repl_cost_path_exp"),
+                "repl_cost_exp": solution.get("repl_cost_exp"),
+            })
 
-            # Normalize artifact keys so the rest of the script is solver-agnostic
-            artifacts = _normalize_artifacts(artifacts)
-
-            # ----- 3) Aggregate KPIs & fill base row -----
-            if proc in ("one", "one_stage"):
-                nom = solution.get("costs_0") or {}
-                base_row.update({
-                    "status": _status_name(solution.get("status")),
-                    "objective": solution.get("objective"),
-                    "runtime_s": solution.get("runtime_s"),
-                    "opt_gap": solution.get("opt_gap"),
-                    "cost_time": nom.get("time"),
-                    "cost_time_base": nom.get("time_base"),
-                    "cost_time_over": nom.get("time_over"),
-                    "cost_bypass": nom.get("bypass"),
-                    "cost_wait": nom.get("wait"),
-                    "cost_oper": nom.get("oper"),
-                    "obj_stage1": nom.get("objective"),
-                    "obj_stage2_exp": None,
-                    "repl_cost_freq_exp": None,
-                    "repl_cost_path_exp": None,
-                    "repl_cost_exp": None,
-                })
-
-                # Frequencies + paths header even for one-stage (scenarios=[])
-                logger.write_freqs_two_stage(
-                    i, model,
-                    nominal=(solution.get("chosen_freq")
-                             or solution.get("chosen_freq_stage1")
-                             or artifacts.get("chosen_freq")
-                             or artifacts.get("chosen_freq_stage1")
-                             or {}),
-                    scenarios=[],
-                    nominal_costs=solution.get("costs_0"),
-                )
-
-            else:
-                # Properly aggregate (includes base/over split and bypass)
-                agg_time, agg_time_base, agg_time_over, agg_bypass, agg_wait, agg_oper = _agg_components_two_stage(solution)
-
-                base_row.update({
-                    "status": _status_name(solution.get("status")),
-                    "objective":      solution.get("objective"),
-                    "runtime_s":      solution.get("runtime_s"),
-                    "opt_gap":        solution.get("opt_gap"),
-                    "cost_time":      agg_time,
-                    "cost_time_base": agg_time_base,
-                    "cost_time_over": agg_time_over,
-                    "cost_bypass":    agg_bypass,
-                    "cost_wait":      agg_wait,
-                    "cost_oper":      agg_oper,
-                    "obj_stage1":     solution.get("obj_stage1"),
-                    "obj_stage2_exp": solution.get("obj_stage2_exp"),
-                    "repl_cost_freq_exp": solution.get("repl_cost_freq_exp"),
-                    "repl_cost_path_exp": solution.get("repl_cost_path_exp"),
-                    "repl_cost_exp":      solution.get("repl_cost_exp"),
-                })
-
-                # Wide frequency CSV incl. nominal costs and scenario paths
-                logger.write_freqs_two_stage(
-                    i, model,
-                    nominal=solution.get("chosen_freq_stage1", {}) or {},
-                    scenarios=solution.get("scenarios", []) or [],
-                    nominal_costs=solution.get("costs_0"),
-                    cand_selected=(artifacts.get("cand_selected_lines")
-                                   or artifacts.get("cand_selected")),
-                    cand_all=(artifacts.get("candidates_lines")
-                              or artifacts.get("candidates")),
-                )
-                logger.write_candidates(
-                    i,
-                    model,
-                    candidates_per_s=(artifacts.get("candidates_lines")
-                                      or artifacts.get("candidates")
-                                      or {}),
-                    c_repl_line=float(domain.config.get("cost_repl_line", 0.0)),
-                    selected=(artifacts.get("cand_selected_lines")
-                              or artifacts.get("cand_selected")
-                              or {}),
-                    freqs_per_s=(solution.get("chosen_freq_stage2") or []),
-                )
+            # Wide frequency CSV incl. nominal costs and scenario paths
+            logger.write_freqs_two_stage(
+                i, model,
+                nominal=solution.get("chosen_freq_stage1", {}) or {},
+                scenarios=solution.get("scenarios", []) or [],
+                nominal_costs=solution.get("costs_0"),
+                cand_selected=(artifacts.get("cand_selected_lines")
+                               or artifacts.get("cand_selected")),
+                cand_all=(artifacts.get("candidates_lines")
+                          or artifacts.get("candidates")),
+            )
+            logger.write_candidates(
+                i,
+                model,
+                candidates_per_s=(artifacts.get("candidates_lines")
+                                  or artifacts.get("candidates")
+                                  or {}),
+                c_repl_line=float(domain.config.get("cost_repl_line", 0.0)),
+                selected=(artifacts.get("cand_selected_lines")
+                          or artifacts.get("cand_selected")
+                          or {}),
+                freqs_per_s=(solution.get("chosen_freq_stage2") or []),
+            )
 
         # ----- 4) Edge flows logs -----
         with log_lock:
