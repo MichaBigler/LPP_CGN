@@ -31,6 +31,7 @@ the per-scenario recourse flows so the logger can still inspect each plan.
 from __future__ import annotations
 
 import dataclasses
+import gc
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -39,6 +40,7 @@ import gurobipy as gp
 from gurobipy import GRB
 
 from solve_cgn_integrated import solve_two_stage_integrated
+from solve_cgn_separated import _x_to_1d
 
 
 def _agg_status_code(per_scen_codes: List[int]) -> int:
@@ -112,7 +114,6 @@ def solve_wait_and_see(domain, model, *, gurobi_params: Optional[Dict[str, Any]]
     obj_stage2_exp: float = 0.0
     repl_freq_exp: float = 0.0
     repl_path_exp: float = 0.0
-    last_m = None
 
     def _add(a, b) -> float:
         """None-tolerant float sum used to fold stage-1 and stage-2 components."""
@@ -123,7 +124,6 @@ def solve_wait_and_see(domain, model, *, gurobi_params: Optional[Dict[str, Any]]
         m_s, sol_s, art_s = solve_two_stage_integrated(
             sub_domain, sub_model, gurobi_params=gurobi_params,
         )
-        last_m = m_s
 
         prob = float(p_orig[s])
         z_s = sol_s.get("objective")
@@ -187,12 +187,40 @@ def solve_wait_and_see(domain, model, *, gurobi_params: Optional[Dict[str, Any]]
 
         # Carry the recourse-stage artifacts so the logger can emit one
         # edge-flows file per scenario, matching integrated/separated layout.
+        # IMPORTANT: flatten the raw Gurobi tupledict to a plain {arc: float}
+        # dict *before* moving on. Holding the tupledict keeps the underlying
+        # Gurobi model alive and accumulates memory across sub-solves
+        # (S × per-integrated peak → OOM on shared HPC nodes).
         sub_cgn_list = art_s.get("cgn_stage2_list") or []
         sub_x_list = art_s.get("x_stage2_list") or []
         sub_a2k_list = art_s.get("arc_to_keys_stage2_list") or []
-        cgn_list.append(sub_cgn_list[0] if sub_cgn_list else None)
-        x_list.append(sub_x_list[0] if sub_x_list else None)
-        a2k_list.append(sub_a2k_list[0] if sub_a2k_list else None)
+        sub_cgn = sub_cgn_list[0] if sub_cgn_list else None
+        sub_x_raw = sub_x_list[0] if sub_x_list else None
+        sub_a2k = sub_a2k_list[0] if sub_a2k_list else None
+
+        if sub_cgn is not None and sub_x_raw is not None:
+            x_flat = _x_to_1d(sub_cgn, sub_x_raw, sub_a2k)
+        else:
+            x_flat = None
+
+        cgn_list.append(sub_cgn)
+        x_list.append(x_flat)
+        a2k_list.append({} if x_flat is not None else None)
+
+        # Drop all references to Gurobi objects from the sub-solve so the
+        # garbage collector can release the constraint matrix and variables
+        # before the next sub-solve allocates its own.
+        try:
+            if m_s is not None:
+                m_s.dispose()
+        except Exception:
+            pass
+        del m_s, sol_s, art_s, sub_x_raw, sub_x_list, sub_a2k_list, sub_cgn_list
+        gc.collect()
+
+    # The returned model handle is not used by `run.py`; returning None keeps
+    # us honest about the fact that no single WS model exists.
+    last_m = None
 
     worst_gap = max(gaps) if gaps else None
 

@@ -22,7 +22,7 @@
 # Walltime below must fit within the chosen QOS.
 #SBATCH --qos=6hours
 #SBATCH --time=04:00:00
-#SBATCH --mem=32G
+#SBATCH --mem=128G
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
 #SBATCH --output=logs/lpp_%j.out
