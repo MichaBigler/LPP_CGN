@@ -56,7 +56,11 @@ def solve_eev(domain, model, *, gurobi_params: Optional[Dict[str, Any]] = None):
     )
 
     # If the surrogate is itself infeasible, abort early without stage 2.
-    if math.isinf(sol0.get("opt_gap") or float("inf")) or (m0 is not None and m0.SolCount == 0):
+    # NOTE: `gap or inf` is wrong — Gurobi returns 0.0 on optimal solves, which
+    # is falsy and would short-circuit to inf and trip the early-return.
+    gap = sol0.get("opt_gap")
+    no_solution = (m0 is not None and m0.SolCount == 0)
+    if no_solution or gap is None or math.isinf(float(gap)):
         print("[WARN] EEV stage-1 (mean surrogate) found no solution, skipping stage-2.")
         return m0, sol0, art0
 

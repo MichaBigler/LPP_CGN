@@ -17,7 +17,11 @@
 # ---------------------------------------------------------------------------
 
 #SBATCH --job-name=lpp_cgn
-#SBATCH --time=08:00:00
+# QOS picks the walltime tier — see `sacctmgr show qos`.
+# Available tiers on scicore (typical): 30min, 6hours, 1day, 1week, 2weeks.
+# Walltime below must fit within the chosen QOS.
+#SBATCH --qos=6hours
+#SBATCH --time=04:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
