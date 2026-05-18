@@ -45,6 +45,12 @@ gurobi.log
 *.lp
 *.mps
 *.sol
+*.lic
+
+# --- SLURM / HPC ---
+logs/
+slurm-*.out
+slurm-*.err
 
 # --- Project: optimisation outputs ---
 # Run folders are large and reproducible from Data/ + config.
