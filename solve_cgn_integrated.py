@@ -348,6 +348,7 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
                 "cost_time_raw": v_time,
                 "cost_time_base_raw": v_time_base,
                 "cost_time_over_raw": v_time_over,
+                "cost_bypass_raw": v_bypass,
                 "cost_wait_raw": v_wait_raw,
                 "cost_oper_raw": v_oper,
                 # total of weighted pieces (for quick inspection)
@@ -366,7 +367,10 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
         status_code=int(m.Status),
         status=m.Status,
         runtime_s=getattr(m, "Runtime", None),
-        opt_gap = m.MIPGap,
+        # `m.MIPGap` returns GRB.INFINITY (1e100) when no incumbent — guard it
+        # so downstream code can distinguish "infeasible / no solution" from a
+        # plausibly large but finite optimality gap.
+        opt_gap=(m.MIPGap if m.SolCount else None),
         chosen_freq_stage1=chosen_freq0,
         chosen_freq_stage2=chosen_freq_s,
         scenarios=scenarios,

@@ -28,7 +28,7 @@
 #SBATCH --output=logs/lpp_%j.out
 #SBATCH --error=logs/lpp_%j.err
 #SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=CHANGEME@unibas.ch
+#SBATCH --mail-user=micha.bigler@unibas.ch
 
 set -euo pipefail
 
