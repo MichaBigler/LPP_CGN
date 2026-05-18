@@ -55,4 +55,4 @@ slurm-*.err
 # --- Project: optimisation outputs ---
 # Run folders are large and reproducible from Data/ + config.
 # Track specific snapshots with `git add -f` if you need to share them.
-Results/
+
