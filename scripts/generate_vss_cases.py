@@ -334,12 +334,50 @@ def expand_sweep(in_path: str, out_path: str, data_root: str, *, base_case_id: i
                   f"per_run={per_run} truncated", file=sys.stderr)
 
         rng = random.Random(int(sweep_idx) * 1_000_003 + 17)
+        # For per_run=1, the pool itself enumerates every possible failure;
+        # if variants >= pool size, walk it deterministically rather than
+        # gambling with random sampling + retry budget (coupon-collector
+        # effect would stop several iterations short of the full pool).
+        # For per_run>1 the bundle-space is C(pool, per_run) and remains far
+        # larger than typical `variants`, so random sampling stays fine.
+        exhaustive = (per_run == 1 and variants >= len(pool))
+        if exhaustive:
+            iter_picks = [[item] for item in pool]
+        else:
+            iter_picks = None  # use sampler below
+
+        seen_bundle_keys: Set[Tuple[FailureSet, ...]] = set()
+        emitted = 0
 
         for variant_idx in range(variants):
             actual_per_run = min(per_run, len(pool))
-            picks = rng.sample(pool, actual_per_run)
+            if exhaustive:
+                if variant_idx >= len(iter_picks):
+                    break
+                picks = iter_picks[variant_idx]
+            else:
+                picks = rng.sample(pool, actual_per_run)
             bundle = [fs for (fs, _gs) in picks]
             bundle_lines = [gs for (_fs, gs) in picks]
+            # Order-insensitive identity for "Bundle of failure sets"
+            bundle_key = tuple(sorted(bundle, key=lambda fs: sorted(fs)))
+            if not exhaustive and bundle_key in seen_bundle_keys:
+                # Try to find a fresh sample with a small retry budget.
+                for _ in range(50):
+                    picks = rng.sample(pool, actual_per_run)
+                    bundle = [fs for (fs, _gs) in picks]
+                    bundle_lines = [gs for (_fs, gs) in picks]
+                    bundle_key = tuple(sorted(bundle, key=lambda fs: sorted(fs)))
+                    if bundle_key not in seen_bundle_keys:
+                        break
+                else:
+                    # Pool exhausted for this sweep row.
+                    print(f"[INFO] sweep row {sweep_idx}: emitted {emitted} unique "
+                          f"bundles out of requested {variants} (pool exhausted)",
+                          file=sys.stderr)
+                    break
+            seen_bundle_keys.add(bundle_key)
+            emitted += 1
 
             infra_path = os.path.join(gen_dir, f"scenario_infra_{case_id}.csv")
             prob_path = os.path.join(gen_dir, f"scenario_prob_{case_id}.csv")
