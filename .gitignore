@@ -53,8 +53,12 @@ slurm-*.out
 slurm-*.err
 
 # --- Project: optimisation outputs ---
-# Run folders are large and reproducible from Data/ + config.
-# Track specific snapshots with `git add -f` if you need to share them.
+# Per-task and timestamped raw run folders are large, derivative, and
+# reproducible from Data/ + config. Ignore them by default. Aggregated
+# results (Results/vss_<JOBID>/...) are explicitly NOT ignored — the
+# pattern below matches only folders starting with a digit (`2025_…`,
+# `2026_…`, etc.) and per-task suffixes, leaving `vss_*` trackable.
+Results/[0-9]*/
 
 # Deterministically regenerated scenario files (output of
 # scripts/generate_vss_cases.py). Re-running the generator with the same
