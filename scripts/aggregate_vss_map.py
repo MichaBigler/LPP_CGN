@@ -11,18 +11,21 @@ completes, this script:
 
   1. globs all matching run folders for the given SLURM array job ID
   2. reads each folder's `bounds_summary.csv`
-  3. concatenates them (each task contributes one row per case, typically 1)
+  3. concatenates them
   4. writes `Results/vss_<arrayjob>/vss_map.csv` with case_* metadata + bounds
   5. emits a small `missing_tasks.txt` listing tasks whose summary is absent
 
-Usage:
-    python scripts/aggregate_vss_map.py --job 12141700
-    python scripts/aggregate_vss_map.py --job 12141700 --results-root Results
-    python scripts/aggregate_vss_map.py --job 12141700 --tasks 0-127
+Defaults make the typical case trivial — after `bash submit_vss_sweep.sh`:
 
-If --tasks is omitted, the script doesn't know the expected count and just
-reports what it found. With --tasks "0-N" or "0,1,5,7" it can flag missing
-tasks.
+    python scripts/aggregate_vss_map.py
+
+reads `.last_vss_job` (written by the wrapper) for the job ID and expected
+task count, and auto-detects everything else.
+
+Explicit overrides:
+
+    python scripts/aggregate_vss_map.py --job 12141700
+    python scripts/aggregate_vss_map.py --job 12141700 --tasks 0-127
 """
 from __future__ import annotations
 
@@ -136,20 +139,78 @@ def aggregate(job_id: int, results_root: str = "Results",
     return out_csv
 
 
+def _read_last_job_meta(repo_root: str = ".") -> dict:
+    """Parse the `.last_vss_job` file written by submit_vss_sweep.sh."""
+    path = os.path.join(repo_root, ".last_vss_job")
+    if not os.path.isfile(path):
+        return {}
+    meta: dict = {}
+    with open(path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            meta[k.strip()] = v.strip()
+    return meta
+
+
+def _detect_most_recent_job(results_root: str) -> Optional[int]:
+    """Fallback: derive a job ID from the most recently modified run folder
+    that matches `<datetime>_<JOB>_<TASK>`."""
+    candidates = []
+    for entry in os.listdir(results_root) if os.path.isdir(results_root) else []:
+        full = os.path.join(results_root, entry)
+        if not os.path.isdir(full):
+            continue
+        m = _RE_TASK.search(entry)
+        if not m:
+            continue
+        candidates.append((os.path.getmtime(full), int(m.group(1))))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def _cli():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--job", type=int, required=True,
-                    help="SLURM array job ID")
+    ap.add_argument("--job", type=int, default=None,
+                    help="SLURM array job ID. If omitted, read from "
+                         "`.last_vss_job` (written by submit_vss_sweep.sh) or "
+                         "fall back to the most recent run folder.")
     ap.add_argument("--results-root", default="Results",
                     help="Directory containing per-task run folders")
     ap.add_argument("--tasks", default=None,
-                    help='Optional task ID spec, e.g. "0-127" or "0,1,5"')
+                    help='Task ID spec for missing-task detection, '
+                         'e.g. "0-127" or "0,1,5". If omitted, derived from '
+                         '`.last_vss_job` (tasks=N → "0-(N-1)").')
     ap.add_argument("--out-dir", default=None,
                     help="Output directory (default: Results/vss_<job>)")
     ns = ap.parse_args()
-    expected = _parse_task_spec(ns.tasks)
-    path = aggregate(ns.job, ns.results_root, expected, ns.out_dir)
+
+    # Auto-detect job ID if not given.
+    job_id = ns.job
+    tasks_spec = ns.tasks
+    meta = _read_last_job_meta()
+    if job_id is None and meta.get("job_id"):
+        job_id = int(meta["job_id"])
+        print(f"Using job_id={job_id} from .last_vss_job")
+    if job_id is None:
+        job_id = _detect_most_recent_job(ns.results_root)
+        if job_id is None:
+            print("[ERR] could not determine job id; pass --job explicitly",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(f"Using job_id={job_id} from most recent run folder")
+    if tasks_spec is None and meta.get("job_id") and int(meta["job_id"]) == job_id:
+        n = int(meta.get("tasks", 0) or 0)
+        if n > 0:
+            tasks_spec = f"0-{n - 1}"
+
+    expected = _parse_task_spec(tasks_spec)
+    path = aggregate(job_id, ns.results_root, expected, ns.out_dir)
     sys.exit(0 if path else 1)
 
 

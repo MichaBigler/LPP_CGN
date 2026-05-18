@@ -49,4 +49,18 @@ echo "[2/3] Expanded to ${N} cases"
 LAST=$((N - 1))
 ARRAY_SPEC="0-${LAST}%${PARALLELISM}"
 echo "[3/3] Submitting array ${ARRAY_SPEC} via ${SBATCH_SCRIPT}"
-sbatch --array="${ARRAY_SPEC}" "${SBATCH_SCRIPT}"
+SUBMIT_OUT=$(sbatch --array="${ARRAY_SPEC}" "${SBATCH_SCRIPT}")
+echo "${SUBMIT_OUT}"
+
+# Persist the array job ID + expected task count so `aggregate_vss_map.py`
+# can auto-detect them later without the user having to copy-paste numbers.
+JOB_ID=$(echo "${SUBMIT_OUT}" | grep -oE '[0-9]+' | tail -1)
+if [[ -n "${JOB_ID}" ]]; then
+    cat > "${REPO_ROOT}/.last_vss_job" <<META
+job_id=${JOB_ID}
+tasks=${N}
+expanded_config=${OUT_CSV}
+submitted_at=$(date -Iseconds)
+META
+    echo "Saved job metadata to .last_vss_job"
+fi
