@@ -166,7 +166,11 @@ def _solve_stage2_given_first_stage(domain, model, sol0, art0, *, gurobi_params=
     # ----------------------------- Stage 2 (per scenario) -----------------------------
     for s in range(S):
         m = gp.Model(f"LPP_TWO_STAGE_S{str(s)}")
-        m.Params.Threads = os.cpu_count()
+        # Respect the SLURM-allocated thread budget if the config supplies one;
+        # otherwise fall back to all physical cores. `os.cpu_count()` ignores
+        # cgroup limits, so without the config override this would oversubscribe
+        # on shared HPC nodes.
+        m.Params.Threads = int(domain.config.get("threads", os.cpu_count()))
 
         # Build CGN for scenario s using per-line candidates
         cgn = make_cgn_with_candidates_per_line(model, cand_all_lines[s])

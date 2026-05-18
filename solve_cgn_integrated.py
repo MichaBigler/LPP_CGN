@@ -85,7 +85,11 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
     """
     # Root model
     m = gp.Model("LPP_TWO_STAGE_INTEGRATED")
-    m.Params.Threads = os.cpu_count()
+    # Respect the SLURM-allocated thread budget if the config supplies one;
+    # otherwise fall back to all physical cores. `os.cpu_count()` ignores
+    # cgroup limits, so without the config override this would oversubscribe
+    # on shared HPC nodes.
+    m.Params.Threads = int(domain.config.get("threads", os.cpu_count()))
 
     # -------- Candidate generation (per line, per scenario) --------
     # Use attached CandidateConfig if present; otherwise fall back to defaults.
