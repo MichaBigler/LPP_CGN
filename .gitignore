@@ -1,0 +1,52 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual envs
+.venv/
+venv/
+env/
+.env/
+
+# Packaging / build artefacts
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Gurobi ---
+*.log
+gurobi.log
+*.lp
+*.mps
+*.sol
+
+# --- Project: optimisation outputs ---
+# Run folders are large and reproducible from Data/ + config.
+# Track specific snapshots with `git add -f` if you need to share them.
+Results/

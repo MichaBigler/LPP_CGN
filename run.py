@@ -21,8 +21,55 @@ from load_data import load_and_build, load_candidate_config
 from solve_cgn_one_stage import solve_one_stage
 from solve_cgn_separated import solve_two_stage_separated
 from solve_cgn_integrated import solve_two_stage_integrated
+from solve_cgn_wait_and_see import solve_wait_and_see
+from solve_cgn_eev import solve_eev
 
 from log import RunBatchLogger
+from compute_bounds import compute_bounds
+
+
+# Procedures that share a run group when expanded from a single config row.
+_BOUNDS_PROCEDURES = ("ws", "integrated", "separated", "eev")
+
+
+def _expand_procedures(proc_cell):
+    """
+    Parse the `procedure` cell. Returns a list of single procedures.
+
+    Accepted forms:
+      "integrated"                          → ["integrated"]
+      "ws,integrated,separated,eev"         → list
+      "bounds"                              → expansion to the four bounds-relevant procedures
+    """
+    s = str(proc_cell or "").strip().lower()
+    if not s:
+        return ["one"]
+    if s == "bounds":
+        return list(_BOUNDS_PROCEDURES)
+    if "," in s:
+        return [p.strip() for p in s.split(",") if p.strip()]
+    return [s]
+
+
+def _expand_cfg_df(cfg_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expand each input row into one row per procedure. All sub-rows of the
+    same input row share a `run_group_id`, which `compute_bounds.py` uses
+    to join them when producing `bounds_summary.csv`.
+    """
+    rows = []
+    # Use enumerate (not the DataFrame index) so non-default indices
+    # from upstream filters/concat still yield unique, contiguous group ids.
+    for src_pos, (_, src) in enumerate(cfg_df.iterrows()):
+        cfg_d = src.to_dict()
+        procs = _expand_procedures(cfg_d.get("procedure", "one"))
+        run_group_id = f"g_{src_pos:03d}"
+        for proc in procs:
+            row = dict(cfg_d)
+            row["procedure"] = proc
+            row["run_group_id"] = run_group_id
+            rows.append(row)
+    return pd.DataFrame(rows)
 
 # ---------- helpers ----------
 
@@ -115,6 +162,10 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
             m, solution, artifacts = solve_two_stage_integrated(domain, model)
         elif proc in ("separated", "sequential"):
             m, solution, artifacts = solve_two_stage_separated(domain, model)
+        elif proc in ("ws", "wait_and_see"):
+            m, solution, artifacts = solve_wait_and_see(domain, model)
+        elif proc in ("eev", "expected_value"):
+            m, solution, artifacts = solve_eev(domain, model)
         else:
             print(f"[WARN] unknown procedure '{proc}', falling back to one_stage")
             m, solution, artifacts = solve_one_stage(domain, model)
@@ -160,6 +211,14 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
             # Properly aggregate (includes base/over split and bypass)
             agg_time, agg_time_base, agg_time_over, agg_bypass, agg_wait, agg_oper = _agg_components_two_stage(solution)
 
+            # If a two-stage solver returned no objective at all (e.g. stage-1
+            # infeasible early-return from separated or EEV), zero costs from
+            # the aggregator are misleading — null them so base_log stays
+            # consistent with the missing objective.
+            if solution.get("objective") is None:
+                agg_time = agg_time_base = agg_time_over = None
+                agg_bypass = agg_wait = agg_oper = None
+
             base_row.update({
                 "status": _status_name(solution.get("status")),
                 "objective": solution.get("objective"),
@@ -189,18 +248,20 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
                 cand_all=(artifacts.get("candidates_lines")
                           or artifacts.get("candidates")),
             )
-            logger.write_candidates(
-                i,
-                model,
-                candidates_per_s=(artifacts.get("candidates_lines")
-                                  or artifacts.get("candidates")
-                                  or {}),
-                c_repl_line=float(domain.config.get("cost_repl_line", 0.0)),
-                selected=(artifacts.get("cand_selected_lines")
-                          or artifacts.get("cand_selected")
-                          or {}),
-                freqs_per_s=(solution.get("chosen_freq_stage2") or []),
-            )
+            # WS has no candidate-selection step; skip writing an empty CSV.
+            if proc not in ("ws", "wait_and_see"):
+                logger.write_candidates(
+                    i,
+                    model,
+                    candidates_per_s=(artifacts.get("candidates_lines")
+                                      or artifacts.get("candidates")
+                                      or {}),
+                    c_repl_line=float(domain.config.get("cost_repl_line", 0.0)),
+                    selected=(artifacts.get("cand_selected_lines")
+                              or artifacts.get("cand_selected")
+                              or {}),
+                    freqs_per_s=(solution.get("chosen_freq_stage2") or []),
+                )
 
         # ----- 4) Edge flows logs -----
         with log_lock:
@@ -269,6 +330,10 @@ def main():
     cfg_path  = os.path.join(data_root, "Data", "config.csv")
     cfg_df    = pd.read_csv(cfg_path, sep=';')
 
+    # Expand procedure lists/aliases into one row per actual solver run.
+    # Adds `run_group_id` so bounds aggregation can join sibling runs later.
+    cfg_df = _expand_cfg_df(cfg_df).reset_index(drop=True)
+
     # Kandidaten-Konfig einmal laden (read-only, für alle Threads verwendbar)
     cand_cfg = load_candidate_config(data_root)
 
@@ -305,6 +370,16 @@ def main():
                     traceback.print_exc()
 
     print(f"\nBase log: {logger.base_log_path}")
+
+    # End-of-batch hook: aggregate WS/RP/EEV_nom/EEV_mean per run_group_id and
+    # write `bounds_summary.csv` next to base_log.csv. Incomplete groups still
+    # produce a row with NaN in columns whose ingredients are missing.
+    try:
+        bounds_path = compute_bounds(logger.out_dir)
+        if bounds_path:
+            print(f"Bounds summary: {bounds_path}")
+    except Exception:
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()

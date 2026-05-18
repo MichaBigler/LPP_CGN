@@ -11,6 +11,8 @@ It provides:
 - candidate generation counters (detours/K-shortest).
 """
 
+import numpy as np
+
 from optimisation import (
     od_pairs,
     add_flow_conservation,
@@ -128,6 +130,28 @@ def _rep_line_of_group(model):
     for g, (fwd, bwd) in model.line_group_to_lines.items():
         rep[g] = fwd if fwd >= 0 else (bwd if bwd >= 0 else None)
     return rep
+
+
+# ---------- scenario aggregation ----------
+
+def _mean_scenario_capacity(model) -> np.ndarray:
+    """
+    Probability-weighted per-arc infrastructure capacity across scenarios.
+
+        mean_cap[a] = sum_s p_s * cap_sa[s, a]
+
+    Used as the deterministic surrogate for EEV. Unmodified arcs default to
+    `infrastructure_capacity` in every scenario, so the weighted mean equals
+    that nominal value; restricted arcs receive a fractional capacity
+    reflecting the mix of scenarios. Length matches `model.E_dir`.
+    """
+    cap_sa = np.asarray(model.cap_sa, dtype=float)  # (S, E_dir)
+    p_s = np.asarray(model.p_s, dtype=float).reshape(-1)
+    if cap_sa.shape[0] != p_s.shape[0]:
+        raise ValueError(
+            f"cap_sa rows {cap_sa.shape[0]} != p_s length {p_s.shape[0]}"
+        )
+    return (p_s[:, None] * cap_sa).sum(axis=0)
 
 
 # ---------- candidate counters ----------
