@@ -322,13 +322,35 @@ def parse_args():
     ap = argparse.ArgumentParser(description="Run LPP-CGN optimisation over config.csv")
     ap.add_argument("--workers", type=int, default=1, help="Anzahl paralleler Läufe (Threads). Standard: 1")
     ap.add_argument("--data-root", type=str, default=".", help="Wurzelverzeichnis (enthält Data/ und Results/)")
+    ap.add_argument("--config", type=str, default=None,
+                    help="Alternative Config-CSV (Default: Data/config.csv). "
+                         "Akzeptiert absolute oder relative Pfade.")
+    ap.add_argument("--row", type=int, default=None,
+                    help="Nur diese Zeile (0-basiert) aus der INPUT-Config laufen. "
+                         "Procedure-Expansion findet weiterhin statt. Nützlich für SLURM-Arrays.")
+    ap.add_argument("--stamp-suffix", type=str, default=None,
+                    help="Suffix für den Lauf-Ordnernamen, z.B. ${SLURM_ARRAY_JOB_ID}_${TASK} "
+                         "damit parallele Array-Tasks eindeutige Ordner bekommen. "
+                         "WICHTIG: ohne Suffix können parallele run.py-Aufrufe in derselben "
+                         "Minute auf denselben Ordner schreiben und sich gegenseitig "
+                         "base_log.csv-Zeilen überschreiben.")
     return ap.parse_args()
 
 def main():
     args = parse_args()
     data_root = args.data_root
-    cfg_path  = os.path.join(data_root, "Data", "config.csv")
+    cfg_path = args.config if args.config else os.path.join(data_root, "Data", "config.csv")
     cfg_df    = pd.read_csv(cfg_path, sep=';')
+
+    # Optional row-selection BEFORE procedure expansion: an array task that
+    # passes --row N gets exactly the procedures of input row N (which may
+    # itself expand to multiple sub-runs via procedure=bounds).
+    if args.row is not None:
+        if args.row < 0 or args.row >= len(cfg_df):
+            raise IndexError(
+                f"--row {args.row} out of range for config with {len(cfg_df)} rows"
+            )
+        cfg_df = cfg_df.iloc[[args.row]].reset_index(drop=True)
 
     # Expand procedure lists/aliases into one row per actual solver run.
     # Adds `run_group_id` so bounds aggregation can join sibling runs later.
@@ -337,8 +359,15 @@ def main():
     # Kandidaten-Konfig einmal laden (read-only, für alle Threads verwendbar)
     cand_cfg = load_candidate_config(data_root)
 
+    # Run-folder stamp: default = current time. With --stamp-suffix it becomes
+    # `<datetime>_<suffix>` so SLURM array tasks land in distinct folders.
+    stamp = None
+    if args.stamp_suffix:
+        from datetime import datetime
+        stamp = datetime.now().strftime("%Y_%m_%d_%H_%M") + "_" + str(args.stamp_suffix)
+
     # Zentraler Logger (legt einmal den Lauf-Ordner an)
-    logger = RunBatchLogger(data_root=data_root, cfg_df=cfg_df)
+    logger = RunBatchLogger(data_root=data_root, cfg_df=cfg_df, stamp=stamp)
     print(f"Logging to: {logger.out_dir}")
 
     # Lock für alle Logger-Schreibzugriffe

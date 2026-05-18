@@ -106,12 +106,24 @@ def compute_bounds(results_dir: str, *, out_csv: Optional[str] = None) -> Option
     if not key_cols:
         return None
 
-    # One row per group with key columns + bound columns.
+    # Columns whose value is constant within a group and worth carrying through
+    # so downstream sweep-aggregators (e.g. aggregate_vss_map.py) can join on
+    # case metadata without re-reading base_log.csv.
+    # ASSUMPTION: case_* columns are config columns shared by every procedure
+    # sub-row of a group. If a future schema introduces a case_* column that
+    # varies across rows in a group, the first non-null value wins silently.
+    carry_cols = [c for c in df.columns if c.startswith("case_") and c not in key_cols]
+
+    # One row per group with key columns + carry-through + bound columns.
     out_rows = []
     for keys, group in df.groupby(key_cols, dropna=False):
         if not isinstance(keys, tuple):
             keys = (keys,)
         row = dict(zip(key_cols, keys))
+        for c in carry_cols:
+            # Constant within a group by construction; first non-null wins.
+            vals = group[c].dropna()
+            row[c] = vals.iloc[0] if not vals.empty else None
         row.update(_bounds_for_group(group))
         # Carry a representative procedure list so the user can see which
         # bounds are available in this group at a glance.
@@ -124,9 +136,10 @@ def compute_bounds(results_dir: str, *, out_csv: Optional[str] = None) -> Option
         return None
 
     bounds_df = pd.DataFrame(out_rows)
-    # Stable column order: keys, bound objectives, bound differences, audit.
+    # Stable column order: keys, case meta, bound objectives, bound differences, audit.
     ordered = (
         key_cols
+        + carry_cols
         + ["WS", "RP", "EEV_nom", "EEV_mean", "EVPI", "VSS_nom", "VSS_mean", "procedures_present"]
     )
     bounds_df = bounds_df[[c for c in ordered if c in bounds_df.columns]]

@@ -56,3 +56,8 @@ slurm-*.err
 # Run folders are large and reproducible from Data/ + config.
 # Track specific snapshots with `git add -f` if you need to share them.
 
+# Deterministically regenerated scenario files (output of
+# scripts/generate_vss_cases.py). Re-running the generator with the same
+# Data/config_vss.csv reproduces them, so they don't belong in version control.
+Data/*/generated/
+
