@@ -82,6 +82,14 @@ def _single_scenario_subview(domain, model, s: int):
         p_s=np.array([1.0], dtype=float),
         cap_sa=model.cap_sa[s:s + 1, :],
     )
+    # `model.config` is attached dynamically by load_data.py (mirrors
+    # domain.config) and is read by prepare_cgn.add_bypass_arcs_if_enabled
+    # and optimisation.build_obj_bypass. `dataclasses.replace` does NOT copy
+    # dynamic attributes, so without this line the WS sub-solve silently
+    # runs with bypass disabled while RP/EEV use bypass — asymmetric model,
+    # nonsensical EVPI.
+    if hasattr(model, "config"):
+        sub_model.config = model.config
     return sub_domain, sub_model
 
 
