@@ -1,4 +1,4 @@
-job_id=12206136
-tasks=544
-expanded_config=Data/config_vss_expanded.csv
-submitted_at=2026-05-19T00:29:39+02:00
+job_id=12219553
+tasks=70
+expanded_config=Data/config_vss_od_scaling_waitfreq_expanded.csv
+submitted_at=2026-05-19T13:28:45+02:00
