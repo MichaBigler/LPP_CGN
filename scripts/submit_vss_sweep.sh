@@ -23,6 +23,9 @@ IN_CSV="${IN_CSV:-Data/config_vss.csv}"
 OUT_CSV="${OUT_CSV:-Data/config_vss_expanded.csv}"
 PARALLELISM="${PARALLELISM:-40}"
 SBATCH_SCRIPT="${SBATCH_SCRIPT:-scripts/run_vss_sweep.sbatch}"
+# Extra sbatch flags appended on submit, e.g. for memory / QOS overrides:
+#   SBATCH_EXTRA="--mem=256G --qos=1day --time=23:00:00" bash scripts/submit_vss_sweep.sh
+SBATCH_EXTRA="${SBATCH_EXTRA:-}"
 
 if [[ ! -f "${IN_CSV}" ]]; then
     echo "[ERR] Input config not found: ${IN_CSV}" >&2
@@ -49,7 +52,11 @@ echo "[2/3] Expanded to ${N} cases"
 LAST=$((N - 1))
 ARRAY_SPEC="0-${LAST}%${PARALLELISM}"
 echo "[3/3] Submitting array ${ARRAY_SPEC} via ${SBATCH_SCRIPT}"
-SUBMIT_OUT=$(sbatch --array="${ARRAY_SPEC}" "${SBATCH_SCRIPT}")
+if [[ -n "${SBATCH_EXTRA}" ]]; then
+    echo "     extra sbatch flags: ${SBATCH_EXTRA}"
+fi
+# shellcheck disable=SC2086  # intentional word-splitting of SBATCH_EXTRA
+SUBMIT_OUT=$(sbatch ${SBATCH_EXTRA} --array="${ARRAY_SPEC}" "${SBATCH_SCRIPT}")
 echo "${SUBMIT_OUT}"
 
 # Persist the array job ID + expected task count so `aggregate_vss_map.py`
