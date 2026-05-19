@@ -60,7 +60,8 @@ date
 python run.py \
     --config "${EXPANDED_CFG}" \
     --row "${SLURM_ARRAY_TASK_ID}" \
-    --stamp-suffix "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}" \
+    --stamp-suffix "task_${SLURM_ARRAY_TASK_ID}" \
+    --results-subdir "job_${SLURM_ARRAY_JOB_ID}" \
     --workers 1
 
 date

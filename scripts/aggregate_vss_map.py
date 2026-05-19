@@ -76,22 +76,39 @@ def _parse_job_list(spec: str) -> List[int]:
     return out
 
 
+_RE_NEW_TASK = re.compile(r"task_(\d+)$")
+
+
 def _collect_task_summaries(results_root: str, job_id: int) -> List[Tuple[int, pd.DataFrame, float]]:
-    """Return list of (task_id, df, folder_mtime) for every run folder belonging to `job_id`."""
-    pattern = os.path.join(results_root, f"*_{job_id}_*")
-    dirs = sorted(p for p in glob.glob(pattern) if os.path.isdir(p))
+    """Return list of (task_id, df, folder_mtime) for every run folder belonging to `job_id`.
+
+    Supports two layouts:
+      legacy:  Results/<datetime>_<job>_<task>/
+      grouped: Results/job_<job>/<datetime>_task_<task>/
+    """
+    legacy_pattern = os.path.join(results_root, f"*_{job_id}_*")
+    grouped_pattern = os.path.join(results_root, f"job_{job_id}", "*")
+    dirs = sorted(
+        p for p in glob.glob(legacy_pattern) + glob.glob(grouped_pattern)
+        if os.path.isdir(p)
+    )
     out: List[Tuple[int, pd.DataFrame, float]] = []
     for d in dirs:
-        m = _RE_TASK.search(os.path.basename(d))
-        if not m:
-            continue
-        # The glob can match folders whose timestamp segment coincidentally
-        # contains `_<job_id>_` (e.g. minute = job_id). Verify the regex
-        # captured the same job_id we asked for; otherwise the folder belongs
-        # to a different array job and must be skipped.
-        if int(m.group(1)) != job_id:
-            continue
-        task_id = int(m.group(2))
+        base = os.path.basename(d)
+        # Try new layout first (task_<N>), then legacy (<dt>_<job>_<task>).
+        m_new = _RE_NEW_TASK.search(base)
+        if m_new:
+            task_id = int(m_new.group(1))
+        else:
+            m = _RE_TASK.search(base)
+            if not m:
+                continue
+            # The legacy glob can match folders whose timestamp segment
+            # coincidentally contains `_<job_id>_`. Verify the regex
+            # captured the same job_id we asked for.
+            if int(m.group(1)) != job_id:
+                continue
+            task_id = int(m.group(2))
         bounds_path = os.path.join(d, "bounds_summary.csv")
         if not os.path.isfile(bounds_path):
             print(f"[WARN] missing bounds_summary in {d}", file=sys.stderr)
@@ -226,18 +243,24 @@ def _read_last_job_meta(repo_root: str = ".") -> dict:
     return meta
 
 
+_RE_JOB_DIR = re.compile(r"^job_(\d+)$")
+
+
 def _detect_most_recent_job(results_root: str) -> Optional[int]:
-    """Fallback: derive a job ID from the most recently modified run folder
-    that matches `<datetime>_<JOB>_<TASK>`."""
+    """Fallback: derive a job ID from the most recently modified run folder.
+    Supports both layouts: `<datetime>_<JOB>_<TASK>` (legacy) and `job_<JOB>/`."""
     candidates = []
     for entry in os.listdir(results_root) if os.path.isdir(results_root) else []:
         full = os.path.join(results_root, entry)
         if not os.path.isdir(full):
             continue
-        m = _RE_TASK.search(entry)
-        if not m:
+        m_grouped = _RE_JOB_DIR.match(entry)
+        if m_grouped:
+            candidates.append((os.path.getmtime(full), int(m_grouped.group(1))))
             continue
-        candidates.append((os.path.getmtime(full), int(m.group(1))))
+        m = _RE_TASK.search(entry)
+        if m:
+            candidates.append((os.path.getmtime(full), int(m.group(1))))
     if not candidates:
         return None
     candidates.sort(reverse=True)

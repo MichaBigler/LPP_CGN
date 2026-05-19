@@ -106,13 +106,16 @@ def compute_bounds(results_dir: str, *, out_csv: Optional[str] = None) -> Option
     if not key_cols:
         return None
 
-    # Columns whose value is constant within a group and worth carrying through
-    # so downstream sweep-aggregators (e.g. aggregate_vss_map.py) can join on
-    # case metadata without re-reading base_log.csv.
-    # ASSUMPTION: case_* columns are config columns shared by every procedure
-    # sub-row of a group. If a future schema introduces a case_* column that
-    # varies across rows in a group, the first non-null value wins silently.
-    carry_cols = [c for c in df.columns if c.startswith("case_") and c not in key_cols]
+    # Carry through all non-KPI, non-procedure columns so the aggregator
+    # sees `num_od`, `waiting_time_frequency`, `bypass_multiplier`, … without
+    # having to re-open base_log.csv. `procedure` is excluded because it
+    # varies within a group by construction.
+    carry_cols = [
+        c for c in df.columns
+        if c not in _KPI_COLS
+        and c not in key_cols
+        and c not in ("procedure",)
+    ]
 
     # One row per group with key columns + carry-through + bound columns.
     out_rows = []

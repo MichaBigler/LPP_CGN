@@ -334,6 +334,10 @@ def parse_args():
                          "WICHTIG: ohne Suffix können parallele run.py-Aufrufe in derselben "
                          "Minute auf denselben Ordner schreiben und sich gegenseitig "
                          "base_log.csv-Zeilen überschreiben.")
+    ap.add_argument("--results-subdir", type=str, default=None,
+                    help="Optionaler Subfolder unter Results/, z.B. 'job_<JOBID>' für "
+                         "SLURM-Array-Jobs. Output landet dann in "
+                         "Results/<subdir>/<stamp>/ statt direkt unter Results/.")
     return ap.parse_args()
 
 def main():
@@ -375,7 +379,8 @@ def main():
         stamp = datetime.now().strftime("%Y_%m_%d_%H_%M") + "_" + str(args.stamp_suffix)
 
     # Zentraler Logger (legt einmal den Lauf-Ordner an)
-    logger = RunBatchLogger(data_root=data_root, cfg_df=cfg_df, stamp=stamp)
+    logger = RunBatchLogger(data_root=data_root, cfg_df=cfg_df,
+                            stamp=stamp, subdir=args.results_subdir)
     print(f"Logging to: {logger.out_dir}")
 
     # Lock für alle Logger-Schreibzugriffe
