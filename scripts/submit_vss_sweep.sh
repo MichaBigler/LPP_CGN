@@ -55,8 +55,14 @@ echo "[3/3] Submitting array ${ARRAY_SPEC} via ${SBATCH_SCRIPT}"
 if [[ -n "${SBATCH_EXTRA}" ]]; then
     echo "     extra sbatch flags: ${SBATCH_EXTRA}"
 fi
+# Forward the *actual* expanded-config path to the sbatch script. Without
+# this the sbatch falls back to its built-in default and ignores OUT_CSV,
+# silently running the wrong config for non-default sweeps.
 # shellcheck disable=SC2086  # intentional word-splitting of SBATCH_EXTRA
-SUBMIT_OUT=$(sbatch ${SBATCH_EXTRA} --array="${ARRAY_SPEC}" "${SBATCH_SCRIPT}")
+SUBMIT_OUT=$(sbatch ${SBATCH_EXTRA} \
+                    --export="ALL,EXPANDED_CFG=${OUT_CSV}" \
+                    --array="${ARRAY_SPEC}" \
+                    "${SBATCH_SCRIPT}")
 echo "${SUBMIT_OUT}"
 
 # Persist the array job ID + expected task count so `aggregate_vss_map.py`

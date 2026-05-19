@@ -34,7 +34,10 @@ set -euo pipefail
 
 GUROBI_MODULE="Gurobi/12.0.3-GCCcore-14.2.0"
 VENV_PATH="${HOME}/envs/lpp"
-EXPANDED_CFG="Data/config_vss_expanded.csv"
+# Default for manual sbatch submissions. `submit_vss_sweep.sh` overrides this
+# via --export=…,EXPANDED_CFG=… so different sweeps (e.g. OD-scaling) can
+# point at their own expanded config without colliding on the default path.
+EXPANDED_CFG="${EXPANDED_CFG:-Data/config_vss_expanded.csv}"
 
 mkdir -p logs
 

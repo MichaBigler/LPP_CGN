@@ -341,6 +341,14 @@ def main():
     data_root = args.data_root
     cfg_path = args.config if args.config else os.path.join(data_root, "Data", "config.csv")
     cfg_df    = pd.read_csv(cfg_path, sep=';')
+    # Visible audit: which file did we actually read? Catches the failure
+    # mode where the sbatch picked up a stale expanded config and silently
+    # ran the wrong parameters.
+    print(f"[run.py] config={cfg_path}, rows={len(cfg_df)}")
+    for k in ("num_od", "waiting_time_frequency", "bypass_multiplier"):
+        if k in cfg_df.columns:
+            uniq = cfg_df[k].unique()
+            print(f"[run.py]   {k} = {list(uniq)}")
 
     # Optional row-selection BEFORE procedure expansion: an array task that
     # passes --row N gets exactly the procedures of input row N (which may
