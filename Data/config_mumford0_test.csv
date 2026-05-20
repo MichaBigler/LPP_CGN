@@ -1,2 +1,2 @@
 source;network;scenario_line_data;procedure;routing_agg;waiting_time_frequency;gap;time_limit;travel_time_cost_mult;waiting_time_cost_mult;line_operation_cost_mult;cost_repl_freq;cost_repl_line;repl_budget;bypass_multiplier;overdemand_threshold;overdemand_multiplier;num_od;train_capacity;infrastructure_capacity;max_frequency;threads;scenario_infra_id;scenario_prob_id
-lintim;Mumford0;Mumford0;one;TRUE;False;0.001;3600;1;2;20;50;200;-5;100;0.75;2;50;200;10;10;16;1;1
+lintim;Mumford0;Mumford0;one;TRUE;False;0.001;3600;1;2;20;50;200;-5;100;0.75;2;50;500;30;20;16;1;1
