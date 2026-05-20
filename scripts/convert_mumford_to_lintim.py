@@ -77,8 +77,13 @@ def _build_adjacency(links: List[Tuple[int, int, float]]) -> Dict[int, List[Tupl
     return adj
 
 
-def _dijkstra_path(adj, src: int, dst: int) -> Optional[List[int]]:
-    """Shortest path src→dst by travel time. Returns node list or None."""
+def _dijkstra_path(adj, src: int, dst: int,
+                   forbidden_edges: Optional[set] = None) -> Optional[List[int]]:
+    """Shortest path src→dst by travel time. Returns node list or None.
+
+    `forbidden_edges` is a set of frozensets({u, v}); those undirected edges
+    are skipped during expansion (used for k-shortest path generation).
+    """
     if src == dst:
         return [src]
     pq: List[Tuple[float, int]] = [(0.0, src)]
@@ -91,6 +96,8 @@ def _dijkstra_path(adj, src: int, dst: int) -> Optional[List[int]]:
         if u == dst:
             break
         for v, w in adj.get(u, []):
+            if forbidden_edges and frozenset({u, v}) in forbidden_edges:
+                continue
             nd = d + w
             if nd < dist.get(v, float("inf")):
                 dist[v] = nd
@@ -105,33 +112,106 @@ def _dijkstra_path(adj, src: int, dst: int) -> Optional[List[int]]:
     return path
 
 
+def _k_shortest_paths(adj, src: int, dst: int, k: int) -> List[List[int]]:
+    """Yen-lite: greedy edge-removal k-shortest paths.
+
+    Generates up to k pairwise edge-disjoint-ish paths. Not exact Yen's,
+    but works fine for diverse line synthesis: each successive path is the
+    shortest path under removal of one edge from the previous best.
+    """
+    if k < 1:
+        return []
+    paths: List[List[int]] = []
+    seen_keys: set = set()
+    first = _dijkstra_path(adj, src, dst)
+    if first is None:
+        return []
+    paths.append(first)
+    seen_keys.add(tuple(first))
+
+    # Generate up to k-1 more by removing one edge at a time from earlier paths
+    candidates: List[Tuple[float, List[int]]] = []
+    for base in paths:
+        if len(paths) >= k:
+            break
+        for i in range(len(base) - 1):
+            forbid = {frozenset({base[i], base[i + 1]})}
+            alt = _dijkstra_path(adj, src, dst, forbidden_edges=forbid)
+            if alt is None or tuple(alt) in seen_keys:
+                continue
+            # Score by length
+            length = sum(_edge_w(adj, alt[j], alt[j + 1]) for j in range(len(alt) - 1))
+            candidates.append((length, alt))
+    candidates.sort(key=lambda x: x[0])
+    for _, p in candidates:
+        if tuple(p) in seen_keys:
+            continue
+        paths.append(p)
+        seen_keys.add(tuple(p))
+        if len(paths) >= k:
+            break
+    return paths
+
+
+def _edge_w(adj, u: int, v: int) -> float:
+    for nb, w in adj.get(u, []):
+        if nb == v:
+            return w
+    return float("inf")
+
+
+def _path_length(adj, path: List[int]) -> float:
+    return sum(_edge_w(adj, path[i], path[i + 1]) for i in range(len(path) - 1))
+
+
 def _synth_line_pool(demand: List[Tuple[int, int, float]],
                      adj: Dict[int, List[Tuple[int, float]]],
                      n_lines: int,
-                     min_stops: int = 4) -> List[List[int]]:
-    """Pick the top-`n_lines` OD pairs by demand and turn each into a line via
-    shortest path. Dedupe identical line shapes (in either direction).
+                     min_stops: int = 4,
+                     strategy: str = "combined",
+                     k_shortest: int = 1) -> List[List[int]]:
+    """Pick OD pairs by `strategy` and generate k shortest paths per pair.
 
-    Returns the +1-direction stop sequences. The loader auto-creates the
-    reverse direction when it reads lines.csv.
+    strategy:
+      demand    — sort by demand desc (favours high-demand OD)
+      length    — sort by shortest-path length desc (favours long routes ≈ diameter pairs)
+      combined  — sort by demand × shortest-path length (high-demand AND long)
+
+    For each chosen OD, generate up to `k_shortest` paths and add as lines.
+    Dedupe by path shape (in either direction). Stops once `n_lines` reached.
     """
-    sorted_od = sorted(demand, key=lambda x: -x[2])
-    seen: set = set()
-    lines: List[List[int]] = []
-    for o, d, _w in sorted_od:
+    # Pre-compute shortest path lengths to enable the length-aware strategies.
+    od_with_len: List[Tuple[int, int, float, float]] = []
+    for o, d, w in demand:
         if o == d:
             continue
-        path = _dijkstra_path(adj, o, d)
-        if path is None or len(path) < min_stops:
+        sp = _dijkstra_path(adj, o, d)
+        if sp is None or len(sp) < min_stops:
             continue
-        key = tuple(path)
-        rkey = tuple(reversed(path))
-        if key in seen or rkey in seen:
-            continue
-        seen.add(key)
-        lines.append(path)
-        if len(lines) >= n_lines:
-            break
+        L = _path_length(adj, sp)
+        od_with_len.append((o, d, w, L))
+
+    if strategy == "demand":
+        od_with_len.sort(key=lambda x: -x[2])
+    elif strategy == "length":
+        od_with_len.sort(key=lambda x: -x[3])
+    else:  # combined
+        od_with_len.sort(key=lambda x: -(x[2] * x[3]))
+
+    seen: set = set()
+    lines: List[List[int]] = []
+    for o, d, _w, _L in od_with_len:
+        for path in _k_shortest_paths(adj, o, d, k=k_shortest):
+            if len(path) < min_stops:
+                continue
+            key = tuple(path)
+            rkey = tuple(reversed(path))
+            if key in seen or rkey in seen:
+                continue
+            seen.add(key)
+            lines.append(path)
+            if len(lines) >= n_lines:
+                return lines
     return lines
 
 
@@ -243,9 +323,18 @@ def main() -> None:
                     help="Path to LPP_CGN repo root (default: current dir)")
     ap.add_argument("--num-lines", type=int, default=30,
                     help="Number of lines to synthesise via shortest paths "
-                         "between top-demand OD pairs")
+                         "between selected OD pairs")
     ap.add_argument("--min-stops", type=int, default=4,
                     help="Discard synthesised lines shorter than this")
+    ap.add_argument("--strategy", default="combined",
+                    choices=["demand", "length", "combined"],
+                    help="OD selection strategy: 'demand' (top by demand), "
+                         "'length' (top by shortest-path length, diameter-like), "
+                         "'combined' (top by demand x length, default)")
+    ap.add_argument("--k-shortest", type=int, default=1,
+                    help="Number of distinct shortest paths per OD pair "
+                         "(uses Yen-lite edge removal). Higher = more diverse, "
+                         "overlapping lines for transfer-rich routing")
     ap.add_argument("--infra-cap-std", type=int, default=10,
                     help="Default infrastructure capacity per arc")
     ns = ap.parse_args()
@@ -274,7 +363,8 @@ def main() -> None:
     _write_od_giv(os.path.join(lintim_dir, "OD.giv"), demand)
 
     adj = _build_adjacency(links)
-    line_paths = _synth_line_pool(demand, adj, ns.num_lines, ns.min_stops)
+    line_paths = _synth_line_pool(demand, adj, ns.num_lines, ns.min_stops,
+                                  strategy=ns.strategy, k_shortest=ns.k_shortest)
     _write_lines_csv(os.path.join(data_dir, "lines.csv"), line_paths)
     _write_scenario_files(data_dir)
     _write_properties_general(os.path.join(data_dir, "properties_general.csv"),
