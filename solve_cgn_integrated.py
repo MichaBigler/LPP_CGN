@@ -5,6 +5,11 @@ import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 
+# Per-scenario diagnostic dump; toggled by LPP_DEBUG_WS=1 (shared with
+# solve_cgn_wait_and_see.py) so we can diff the RP slice values against each
+# WS sub-solve while tracking down WS > RP violations.
+_DEBUG_WS = os.environ.get("LPP_DEBUG_WS", "").strip().lower() in ("1", "true", "yes")
+
 from prepare_cgn import make_cgn, make_cgn_with_candidates_per_line
 from find_candidates import build_candidates_all_scenarios_per_line_cfg
 from optimisation import (
@@ -362,6 +367,53 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
     obj_stage2_exp_val = float((stage2_norepl_exp + repl_path_exp + repl_freq_exp).getValue()) if m.SolCount else None
     repl_cost_path_exp_val = float(repl_path_exp.getValue()) if m.SolCount else None
     repl_cost_freq_exp_val = float(repl_freq_exp.getValue()) if m.SolCount else None
+
+    # ----- DEBUG: per-scenario slice dump (toggle via LPP_DEBUG_WS=1) -----
+    # For each scenario s prints the joint-plan x* slice components — directly
+    # comparable to what each WS sub-solve prints for the same scenario s.
+    if _DEBUG_WS and scenarios:
+        print(
+            f"[RP-DBG] integrated solve (S={S}, p_s={list(map(float, model.p_s))}, "
+            f"stage1_obj={obj_stage1_val}, stage2_exp={obj_stage2_exp_val})",
+            flush=True,
+        )
+        for s, scd in enumerate(scenarios):
+            try:
+                cap_row = model.cap_sa[s, :]
+                blocked_arcs = int(np.sum(cap_row <= 0))
+            except Exception:
+                blocked_arcs = -1
+            # Slice obj for this scenario (un-weighted), as RP "sees" it:
+            #   slice_s = stage1(x*) + stage2(x*, s) + repl(x*, s)
+            slice_s = (
+                (obj_stage1_val or 0.0)
+                + float(scd.get("cost_time") or 0.0)
+                + float(scd.get("cost_bypass") or 0.0)
+                + float(scd.get("cost_wait") or 0.0)
+                + float(scd.get("cost_oper") or 0.0)
+                + float(scd.get("cost_repl_freq") or 0.0)
+                + float(scd.get("cost_repl_path") or 0.0)
+            )
+            print(
+                f"[RP-DBG] slice s={s} (scen_id={int(scd.get('id', -1))}, "
+                f"p_s={float(scd.get('prob') or 0.0):.4f}, "
+                f"blocked_arcs_in_cap={blocked_arcs})\n"
+                f"        V_s (stage1+stage2 for x*) = {slice_s}\n"
+                f"        stage1(x*)     = {obj_stage1_val}\n"
+                f"        nom.bypass     = {costs0.get('bypass')}\n"
+                f"        nom.time       = {costs0.get('time')}\n"
+                f"        nom.wait       = {costs0.get('wait')}\n"
+                f"        nom.oper       = {costs0.get('oper')}\n"
+                f"        s2.cost_bypass = {scd.get('cost_bypass')}\n"
+                f"        s2.cost_time   = {scd.get('cost_time')}\n"
+                f"        s2.cost_wait   = {scd.get('cost_wait')}\n"
+                f"        s2.cost_oper   = {scd.get('cost_oper')}\n"
+                f"        s2.cost_repl_freq = {scd.get('cost_repl_freq')}\n"
+                f"        s2.cost_repl_path = {scd.get('cost_repl_path')}\n"
+                f"        freq_stage1    = {dict(sorted((chosen_freq0 or {}).items()))}\n"
+                f"        freq_stage2    = {dict(sorted((scd.get('freq') or {}).items()))}",
+                flush=True,
+            )
 
     solution = dict(
         status_code=int(m.Status),

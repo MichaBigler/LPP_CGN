@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import gc
+import os
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -41,6 +42,13 @@ from gurobipy import GRB
 
 from solve_cgn_integrated import solve_two_stage_integrated
 from solve_cgn_separated import _x_to_1d
+
+
+# Enable verbose per-sub-solve diagnostics by exporting LPP_DEBUG_WS=1.
+# Used to investigate WS > RP violations: prints z_s, stage1/stage2 breakdown,
+# bypass split between stages, and chosen frequencies for each sub-solve so we
+# can diff sub-solve outputs against the RP slice for the same scenario.
+_DEBUG_WS = os.environ.get("LPP_DEBUG_WS", "").strip().lower() in ("1", "true", "yes")
 
 
 def _agg_status_code(per_scen_codes: List[int]) -> int:
@@ -168,6 +176,44 @@ def solve_wait_and_see(domain, model, *, gurobi_params: Optional[Dict[str, Any]]
 
         chosen_freq_s = sub_scen0.get("freq") or {}
         chosen_freq_list.append(chosen_freq_s)
+
+        # ----- DEBUG: per-sub-solve decomposition (toggle via LPP_DEBUG_WS=1) -----
+        # Prints the sub-solve's z_s split into stage-1 nominal vs. stage-2 recourse,
+        # plus the bypass cost separately for each stage. This lets us compare each
+        # sub-solve's optimum against the RP slice for the same scenario s and find
+        # the source of WS > RP violations.
+        if _DEBUG_WS:
+            nom_freq_s1 = sol_s.get("chosen_freq_stage1") or {}
+            scen_id = int(scen_ids[s])
+            try:
+                cap_row = model.cap_sa[s, :]
+                blocked_arcs = int(np.sum(cap_row <= 0))
+            except Exception:
+                blocked_arcs = -1
+            print(
+                f"[WS-DBG] sub s={s} (scen_id={scen_id}, p_orig={prob:.4f}, "
+                f"blocked_arcs_in_cap={blocked_arcs})\n"
+                f"        z_s            = {z_s}\n"
+                f"        stage1(x_s)    = {sub_obj_stage1}\n"
+                f"        stage2(x_s,s)  = {sub_obj_stage2}\n"
+                f"        repl_freq_exp  = {sub_repl_freq}\n"
+                f"        repl_path_exp  = {sub_repl_path}\n"
+                f"        nom.bypass     = {nom.get('bypass')}\n"
+                f"        nom.time       = {nom.get('time')}\n"
+                f"        nom.wait       = {nom.get('wait')}\n"
+                f"        nom.oper       = {nom.get('oper')}\n"
+                f"        s2.cost_bypass = {sub_scen0.get('cost_bypass')}\n"
+                f"        s2.cost_time   = {sub_scen0.get('cost_time')}\n"
+                f"        s2.cost_wait   = {sub_scen0.get('cost_wait')}\n"
+                f"        s2.cost_oper   = {sub_scen0.get('cost_oper')}\n"
+                f"        s2.cost_repl_freq = {sub_scen0.get('cost_repl_freq')}\n"
+                f"        s2.cost_repl_path = {sub_scen0.get('cost_repl_path')}\n"
+                f"        opt_gap        = {gap}\n"
+                f"        runtime_s      = {rt:.2f}\n"
+                f"        freq_stage1    = {dict(sorted(nom_freq_s1.items()))}\n"
+                f"        freq_stage2    = {dict(sorted(chosen_freq_s.items()))}",
+                flush=True,
+            )
 
         scen_dicts.append(dict(
             id=int(scen_ids[s]),
