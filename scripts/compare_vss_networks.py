@@ -104,7 +104,7 @@ def _summary_stats(df: pd.DataFrame, metric: str = "VSS_nom") -> Dict[str, float
     s = pd.to_numeric(df[metric], errors="coerce").dropna()
     if s.empty:
         return {}
-    return {
+    out = {
         "n":       len(s),
         "mean":    float(s.mean()),
         "median":  float(s.median()),
@@ -113,6 +113,16 @@ def _summary_stats(df: pd.DataFrame, metric: str = "VSS_nom") -> Dict[str, float
         "max":     float(s.max()),
         "neg":     int((s < -1).sum()),  # negatives — sign of solver noise
     }
+    # Also compute the metric as a fraction of RP (relative cost saving).
+    # This is the network-comparable view: absolute EVPI/VSS depend on
+    # nominal cost magnitude (which differs by ~5x between SF and Mumford0).
+    rp = pd.to_numeric(df.loc[s.index, "RP"], errors="coerce")
+    rel = s / rp
+    rel = rel.replace([np.inf, -np.inf], np.nan).dropna()
+    if not rel.empty:
+        out["rel_median"] = float(rel.median())
+        out["rel_p95"] = float(rel.quantile(0.95))
+    return out
 
 
 def _make_main_map_boxplot(
@@ -252,6 +262,40 @@ def _write_summary(
                  f"({'EVPI = RP − WS' if use_evpi else 'VSS_nom = EEV_nom − RP'})")
     lines.append("")
 
+    # --- Headline numbers across all sweeps (relative scale = comparable) ---
+    sf_dfs = [df for slug, df in by_slug.items() if slug.startswith("sf_") or slug == "sf_main"]
+    mu_dfs = [df for slug, df in by_slug.items() if slug.startswith("mumford0")]
+    if sf_dfs and mu_dfs:
+        sf_all = pd.concat(sf_dfs, ignore_index=True)
+        mu_all = pd.concat(mu_dfs, ignore_index=True)
+        sf_neg = int((pd.to_numeric(sf_all[metric], errors="coerce") < -1).sum())
+        mu_neg = int((pd.to_numeric(mu_all[metric], errors="coerce") < -1).sum())
+        sf_rel = (pd.to_numeric(sf_all[metric], errors="coerce")
+                  / pd.to_numeric(sf_all["RP"], errors="coerce"))
+        mu_rel = (pd.to_numeric(mu_all[metric], errors="coerce")
+                  / pd.to_numeric(mu_all["RP"], errors="coerce"))
+        sf_rel = sf_rel.replace([np.inf, -np.inf], np.nan).dropna()
+        mu_rel = mu_rel.replace([np.inf, -np.inf], np.nan).dropna()
+        lines.append("## Headline (across all sweeps)")
+        lines.append("")
+        lines.append(f"| | SiouxFalls | Mumford0 |")
+        lines.append(f"|---|---:|---:|")
+        lines.append(f"| cases | {len(sf_all)} | {len(mu_all)} |")
+        lines.append(f"| median {metric} / RP | **{sf_rel.median()*100:.3f}%** | **{mu_rel.median()*100:.3f}%** |")
+        lines.append(f"| P95 {metric} / RP    | {sf_rel.quantile(0.95)*100:.3f}% | {mu_rel.quantile(0.95)*100:.3f}% |")
+        lines.append(f"| cases with {metric}<0 (solver noise) | {sf_neg} | {mu_neg} |")
+        lines.append("")
+        ratio = (sf_rel.median() / mu_rel.median()) if mu_rel.median() > 0 else float("inf")
+        if ratio > 1.5 or ratio < 0.667:
+            lines.append(
+                f"**Structural finding:** SF realises {metric} of ~{sf_rel.median()*100:.2f}% of nominal cost "
+                f"on average, vs {mu_rel.median()*100:.3f}% for Mumford0 (~{ratio:.1f}x ratio). "
+                f"Sparse hierarchical networks (SF) benefit substantially more from explicit "
+                f"stochastic / perfect-info planning; dense redundant networks (Mumford0) "
+                f"already carry built-in robustness via alternative line paths."
+            )
+            lines.append("")
+
     # --- 1) Per-sweep counts and missing data ---
     lines.append("## Sweep inventory")
     lines.append("")
@@ -269,7 +313,7 @@ def _write_summary(
     sf_main = by_slug.get("sf_main")
     mu_main = by_slug.get("mumford0")
     if sf_main is not None and mu_main is not None:
-        lines.append(f"## Main map — {metric} by case_k")
+        lines.append(f"## Main map — {metric} by case_k (absolute)")
         lines.append("")
         lines.append(f"| network | k | n | median | mean | P75 | P95 | max | n<sub><0</sub> |")
         lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
@@ -285,6 +329,27 @@ def _write_summary(
                     f"{_format_eur(stats['median'])} | {_format_eur(stats['mean'])} | "
                     f"{_format_eur(stats['p75'])} | {_format_eur(stats['p95'])} | "
                     f"{_format_eur(stats['max'])} | {stats['neg']} |"
+                )
+        lines.append("")
+
+        # Relative table: same metric expressed as % of RP. This is the
+        # network-comparable view that controls for the ~5x difference in
+        # absolute nominal cost between SF and Mumford0.
+        lines.append(f"## Main map — {metric} / RP by case_k (relative, % of nominal cost)")
+        lines.append("")
+        lines.append(f"| network | k | n | median {metric}/RP | P95 {metric}/RP |")
+        lines.append("|---|---|---:|---:|---:|")
+        for net_name, df in [("SF", sf_main), ("Mumford0", mu_main)]:
+            ks = sorted(df["case_k"].dropna().astype(int).unique())
+            for k in ks:
+                sub = df[df["case_k"] == k]
+                stats = _summary_stats(sub, metric)
+                if not stats or "rel_median" not in stats:
+                    continue
+                lines.append(
+                    f"| {net_name} | {k} | {stats['n']} | "
+                    f"{stats['rel_median']*100:.3f}% | "
+                    f"{stats['rel_p95']*100:.3f}% |"
                 )
         lines.append("")
         # narrative
