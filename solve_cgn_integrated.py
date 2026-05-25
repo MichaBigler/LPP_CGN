@@ -256,10 +256,10 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
 
     m.setObjective(stage1_obj + stage2_norepl_exp + repl_path_exp + repl_freq_exp, GRB.MINIMIZE)
 
-    # Solver params
-    if gurobi_params:
-        for k, v in gurobi_params.items():
-            setattr(m.Params, k, v)
+    # Solver params: domain.config first, then gurobi_params overrides. This
+    # ordering lets callers like solve_wait_and_see force per-sub-solve
+    # deterministic settings (e.g. Threads=1, NumericFocus=2) without having
+    # to mutate the shared config dict.
     if "time_limit" in domain.config:
         m.Params.TimeLimit = int(domain.config["time_limit"])
     if "threads" in domain.config:
@@ -270,6 +270,9 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
         m.Params.MIPGap = float(domain.config["mip_gap"])
     elif "gap" in domain.config:
         m.Params.MIPGap = float(domain.config["gap"])
+    if gurobi_params:
+        for k, v in gurobi_params.items():
+            setattr(m.Params, k, v)
 
     m.optimize()
 

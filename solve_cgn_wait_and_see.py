@@ -116,6 +116,26 @@ def solve_wait_and_see(domain, model, *, gurobi_params: Optional[Dict[str, Any]]
     p_orig = np.asarray(model.p_s, dtype=float)
     scen_ids = domain.scen_prob_df["id"].astype(int).tolist()
 
+    # Force fully deterministic Gurobi settings inside each WS sub-solve.
+    # Background (see git blame / commit message): an earlier Mumford0 sweep
+    # produced WS > RP for ~12% of cases because a parallel-cut interaction
+    # in Gurobi returned an incumbent claiming `MIPGap = 0` while the true
+    # optimum was substantially lower. Threads=1 eliminates the parallel
+    # B&B non-determinism, Seed pins the random tie-breaking, and
+    # NumericFocus=2 trades a small slowdown for conservative cut numerics.
+    #
+    # The safety settings are *sticky*: caller-supplied `gurobi_params` for
+    # other keys still propagates, but Threads/Seed/NumericFocus cannot be
+    # silently overridden by a future caller without editing this block.
+    # That prevents the bug pathway from regressing if someone later passes
+    # `{"Threads": 8}` from a sweep driver for speed.
+    ws_safe_params: Dict[str, Any] = dict(gurobi_params) if gurobi_params else {}
+    ws_safe_params.update({
+        "Threads": 1,
+        "Seed": 42,
+        "NumericFocus": 2,
+    })
+
     scen_dicts: List[Dict[str, Any]] = []
     cgn_list: List[Any] = []
     x_list: List[Any] = []
@@ -138,7 +158,7 @@ def solve_wait_and_see(domain, model, *, gurobi_params: Optional[Dict[str, Any]]
     for s in range(S):
         sub_domain, sub_model = _single_scenario_subview(domain, model, s)
         m_s, sol_s, art_s = solve_two_stage_integrated(
-            sub_domain, sub_model, gurobi_params=gurobi_params,
+            sub_domain, sub_model, gurobi_params=ws_safe_params,
         )
 
         prob = float(p_orig[s])
