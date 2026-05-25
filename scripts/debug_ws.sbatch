@@ -6,12 +6,16 @@
 # both `ws` and `integrated` print per-(sub-)scenario decompositions that can
 # be diffed offline.
 #
-#   CONFIG=Data/config_vss_mumford0_expanded.csv \
-#   ROW=2 \
-#   SUBDIR=debug_ws_811 \
-#       sbatch scripts/debug_ws.sbatch
+# sbatch does NOT inherit the caller's env vars by default — pass them via
+# `--export=ALL,...`:
 #
-# After completion: grep '^\[\(WS\|RP\)-DBG\]' logs/debug_ws_<JOBID>.out
+#   sbatch --export=ALL,\
+# CONFIG=Data/config_vss_mumford0_expanded.csv,\
+# ROW=2,\
+# SUBDIR=debug_ws_811 \
+#       scripts/debug_ws.sbatch
+#
+# After completion: grep -E '^\[(WS|RP)-DBG\]' logs/debug_ws_<JOBID>.out
 # ---------------------------------------------------------------------------
 
 #SBATCH --job-name=lpp_debug_ws
