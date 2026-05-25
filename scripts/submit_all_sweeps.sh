@@ -39,12 +39,14 @@ SWEEPS=(
     "sf_pfail"
     "sf_replcost"
     "sf_traincap"
+    "sf_failurestructures"
     "mumford0"
     "mumford0_bypass"
     "mumford0_overdemand"
     "mumford0_pfail"
     "mumford0_replcost"
     "mumford0_traincap"
+    "mumford0_failurestructures"
 )
 
 # Map slug → IN_CSV. SF main is config_vss.csv (no suffix).
