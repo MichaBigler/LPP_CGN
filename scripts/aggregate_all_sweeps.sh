@@ -20,6 +20,19 @@ cd "${REPO_ROOT}"
 
 JOB_LOG="${REPO_ROOT}/.all_sweeps_jobs"
 OUT_PREFIX="${OUT_PREFIX:-}"
+# Optional filter: only aggregate these slugs (space-separated). Example:
+#   ONLY="sf_failurestructures mumford0_failurestructures" bash scripts/aggregate_all_sweeps.sh
+ONLY="${ONLY:-}"
+VENV_PATH="${VENV_PATH:-${HOME}/envs/lpp}"
+
+# Activate the project venv so pandas/numpy are on PYTHONPATH. Safe to call
+# even when already activated.
+if [[ -f "${VENV_PATH}/bin/activate" ]]; then
+    # shellcheck disable=SC1090
+    source "${VENV_PATH}/bin/activate"
+else
+    echo "[WARN] venv at ${VENV_PATH} not found — aggregator will fail if pandas not on path" >&2
+fi
 
 if [[ ! -f "${JOB_LOG}" ]]; then
     echo "[ERR] ${JOB_LOG} not found — run submit_all_sweeps.sh first" >&2
@@ -56,6 +69,14 @@ echo "Aggregating ${#PAIRS[@]} sweeps..."
 for pair in "${PAIRS[@]}"; do
     slug=$(echo "${pair}" | awk '{print $1}')
     job=$(echo "${pair}" | awk '{print $2}')
+
+    if [[ -n "${ONLY}" ]]; then
+        skip=1
+        for s in ${ONLY}; do
+            if [[ "${s}" == "${slug}" ]]; then skip=0; fi
+        done
+        if [[ ${skip} -eq 1 ]]; then continue; fi
+    fi
 
     if [[ -n "${OUT_PREFIX}" ]]; then
         OUT_DIR="Results/${OUT_PREFIX}_${slug}"
