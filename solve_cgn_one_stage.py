@@ -16,7 +16,7 @@ from solve_utils import (
 
 # ---------- ONE STAGE (nominal, with global infra capacity) ----------
 
-def solve_one_stage(domain, model, *, gurobi_params=None):
+def solve_one_stage(domain, model, *, gurobi_params=None, cap_per_arc_override=None):
     """
     One-stage LPP-CGN:
       - Build a single-layer CGN (no scenario branching).
@@ -24,6 +24,12 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
       - Pick one frequency per line-group (on/off via group binary).
       - Enforce vehicle capacity and global infrastructure capacity.
       - Objective = travel time (+ optional overdemand hinge) + bypass + waiting + operating.
+
+    Args:
+      cap_per_arc_override: optional per-arc capacity array (length E_dir).
+        When provided, replaces the scalar `infrastructure_capacity` from config.
+        Used by Wait-and-See to inject scenario-specific capacities into an
+        otherwise nominal one-stage solve.
 
     Returns:
       m          : gurobipy.Model (solved)
@@ -56,9 +62,14 @@ def solve_one_stage(domain, model, *, gurobi_params=None):
     Q = int(domain.config.get("train_capacity", 200))
     add_passenger_capacity(m, model, cgn, x0, f0_expr, arc_to_keys, Q=Q)
 
-    # Global infrastructure capacity per directed infra-arc: sum(f_ell on that arc) ≤ cap_std
-    cap_std = int(domain.config.get("infrastructure_capacity", 10))
-    add_infrastructure_capacity(m, model, f0_expr, cap_std=cap_std)
+    # Infrastructure capacity per directed infra-arc:
+    #   - default: scalar cap_std from config
+    #   - WS override: per-arc capacity array (scenario-specific)
+    if cap_per_arc_override is not None:
+        add_infrastructure_capacity(m, model, f0_expr, cap_per_arc=cap_per_arc_override)
+    else:
+        cap_std = int(domain.config.get("infrastructure_capacity", 10))
+        add_infrastructure_capacity(m, model, f0_expr, cap_std=cap_std)
 
     # ----------------------------- Cost buckets -----------------------------
     # Travel time with optional overdemand hinge (τ, μ):

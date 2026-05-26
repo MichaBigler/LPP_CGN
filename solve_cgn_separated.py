@@ -90,7 +90,7 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         - solution includes stage-1 summary, expected stage-2 objective and per-scenario breakdowns.
         - artifacts include CGNs and flows (flattened to per-arc) for logging.
     """
-    # ----------------------------- Stage 1 -----------------------------
+    # ----------------------------- Stage 1 (nominal one-stage) -----------------------------
     m0, sol0, art0 = solve_one_stage(domain, model, gurobi_params=gurobi_params)
 
     # If no first-stage solution found, then nothing after this has to be computed
@@ -98,7 +98,25 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
         print("[WARN] Stage-1 found no solution, skipping stage-2.")
         return None, sol0, art0
 
+    return _solve_stage2_given_first_stage(domain, model, sol0, art0, gurobi_params=gurobi_params)
 
+
+def _solve_stage2_given_first_stage(domain, model, sol0, art0, *, gurobi_params=None):
+    """
+    Shared stage-2 recourse: given a first-stage solution (`sol0`, `art0`) and the
+    real per-scenario capacities `model.cap_sa[s,:]`, solve one recourse submodel per
+    scenario with replanning penalties relative to the stage-1 frequencies.
+
+    Used by:
+      - solve_two_stage_separated   (sol0 = nominal one-stage solution)
+      - solve_eev                   (sol0 = one-stage solution on mean infrastructure)
+
+    The function does not care how `sol0` was produced. It only reads:
+      - sol0["chosen_freq"] (or "chosen_freq_stage1") for the stage-1 frequency anchor,
+      - sol0["costs_0"]     for the stage-1 cost contribution to the total objective,
+      - art0["cgn_stage1"], art0["x_stage1"], art0["arc_to_keys_stage1"], art0["line_len"]
+        for flow normalization and group length scaling.
+    """
     # Flatten nominal flows to per-arc for logging downstream
     cgn0 = art0["cgn_stage1"]
     x0   = art0["x_stage1"]
@@ -148,7 +166,11 @@ def solve_two_stage_separated(domain, model, *, gurobi_params=None):
     # ----------------------------- Stage 2 (per scenario) -----------------------------
     for s in range(S):
         m = gp.Model(f"LPP_TWO_STAGE_S{str(s)}")
-        m.Params.Threads = os.cpu_count()
+        # Respect the SLURM-allocated thread budget if the config supplies one;
+        # otherwise fall back to all physical cores. `os.cpu_count()` ignores
+        # cgroup limits, so without the config override this would oversubscribe
+        # on shared HPC nodes.
+        m.Params.Threads = int(domain.config.get("threads", os.cpu_count()))
 
         # Build CGN for scenario s using per-line candidates
         cgn = make_cgn_with_candidates_per_line(model, cand_all_lines[s])

@@ -1,0 +1,10 @@
+tasks=420
+expanded_config=Data/config_vss_sf_failurestructures_expanded.csv
+submitted_at=2026-05-25T16:25:21+02:00
+
+[mumford0_failurestructures]
+job_id=12436270
+tasks=414
+expanded_config=Data/config_vss_mumford0_failurestructures_expanded.csv
+submitted_at=2026-05-25T16:25:25+02:00
+

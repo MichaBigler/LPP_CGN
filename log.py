@@ -91,10 +91,17 @@ def _nodes_from_arc_ids(model, arcs: List[int], *, use_stop_ids: bool = True) ->
 class RunBatchLogger:
     """Creates run folders and writes all CSV logs for each config row."""
 
-    def __init__(self, data_root: str, cfg_df: pd.DataFrame, *, stamp: str | None = None):
+    def __init__(self, data_root: str, cfg_df: pd.DataFrame, *,
+                 stamp: str | None = None, subdir: str | None = None):
         self.data_root = data_root
         self.stamp = stamp or datetime.now().strftime("%Y_%m_%d_%H_%M")
-        self.out_dir = os.path.join(self.data_root, "Results", self.stamp)
+        # `subdir` groups runs (typically by SLURM array-job id), e.g.
+        # Results/job_12219553/<stamp>/. Avoids hundreds of sibling folders
+        # in the flat Results/ root.
+        if subdir:
+            self.out_dir = os.path.join(self.data_root, "Results", subdir, self.stamp)
+        else:
+            self.out_dir = os.path.join(self.data_root, "Results", self.stamp)
         os.makedirs(self.out_dir, exist_ok=True)
 
         # Base log schema = all config.csv columns + KPI columns

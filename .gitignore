@@ -1,0 +1,77 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual envs
+.venv/
+venv/
+env/
+.env/
+
+# Packaging / build artefacts
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Gurobi ---
+*.log
+gurobi.log
+*.lp
+*.mps
+*.sol
+*.lic
+
+# --- SLURM / HPC ---
+logs/
+slurm-*.out
+slurm-*.err
+
+# --- Project: optimisation outputs ---
+# Per-task and timestamped raw run folders are large, derivative, and
+# reproducible from Data/ + config. Ignore them by default. Aggregated
+# results (Results/vss_<JOBID>/...) are explicitly NOT ignored — the
+# patterns below match only legacy flat folders (`2025_…`, `2026_…`)
+# and the new grouped layout (`Results/job_<JOBID>/`), leaving `vss_*`
+# trackable.
+Results/[0-9]*/
+Results/job_*/
+
+# Deterministically regenerated scenario files (output of
+# scripts/generate_vss_cases.py). Re-running the generator with the same
+# Data/config_vss.csv reproduces them, so they don't belong in version control.
+Data/*/generated/
+
+# Expanded sweep configs — regenerated from the corresponding Data/config_vss*.csv
+# on every submit. Transient artefacts.
+Data/config_vss*_expanded.csv
+
+# Sidecar with the last submitted array job's metadata, consumed by
+# scripts/aggregate_vss_map.py for auto-detection. Transient.
+.last_vss_job
+
