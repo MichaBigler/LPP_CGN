@@ -94,6 +94,12 @@ class Config:
     train_capacity: int = 200
     infrastructure_capacity: int = 10
     max_frequency: int = 5
+
+    # Uniform multiplier applied to all OD demand values after the num_od
+    # selection. 1.0 = unchanged. Used for demand-scaling / load-factor
+    # studies where the realistic train capacity is held fixed and the load
+    # factor is varied via demand instead of capacity.
+    demand_scale: float = 1.0
     
     # Replanning costs/budgets (used in two-stage variants)
     cost_repl_freq: float = 0.0
