@@ -26,6 +26,14 @@ SBATCH_SCRIPT="${SBATCH_SCRIPT:-scripts/run_vss_sweep.sbatch}"
 # Extra sbatch flags appended on submit, e.g. for memory / QOS overrides:
 #   SBATCH_EXTRA="--mem=256G --qos=1day --time=23:00:00" bash scripts/submit_vss_sweep.sh
 SBATCH_EXTRA="${SBATCH_EXTRA:-}"
+VENV_PATH="${VENV_PATH:-${HOME}/envs/lpp}"
+
+# The expansion step (generate_vss_cases.py) needs pandas. Activate the
+# project venv if present so the wrapper works from a fresh login shell.
+if [[ -f "${VENV_PATH}/bin/activate" ]]; then
+    # shellcheck disable=SC1090
+    source "${VENV_PATH}/bin/activate"
+fi
 
 if [[ ! -f "${IN_CSV}" ]]; then
     echo "[ERR] Input config not found: ${IN_CSV}" >&2
