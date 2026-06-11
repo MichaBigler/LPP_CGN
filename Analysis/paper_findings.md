@@ -94,38 +94,48 @@ Static structural metrics do not support it: Mumford0 actually has higher
 load concentration (peak/mean 4.76) and sparser line coverage (0.91 vs 3.42
 lines/edge).
 
-## Finding 8 — Load-matched: the topology gap collapses *(key result)*
+## Finding 8 — Load-matched: the topology gap collapses to within ~2× *(key result)*
 
 Both networks run at **identical operational parameters** (train_capacity=50,
 max_frequency=10, infrastructure_capacity=10, bypass_multiplier=50) and the
-**same load factor ρ=0.10** (passenger-km / seat-km at max frequency),
-achieved by demand scaling (SF ×2.54, Mumford0 ×0.037). The only remaining
-differences are topology and relative demand pattern.
+**same load factor ρ** (passenger-km / seat-km at max frequency), achieved by
+demand scaling. Confirmed over **three matched load factors** ρ ∈ {0.05, 0.10,
+0.15}. Only remaining differences: topology and relative demand pattern.
 
-| k | SF VSS/RP | Mumford0 VSS/RP | SF EVPI/RP | Mumford0 EVPI/RP |
+VSS/RP and EVPI/RP, **mean over k=1..4** (the median is misleading here —
+Mumford0's VSS is bimodal: ≈0 at k=1, substantial at k=3,4 — so the median
+hides the high-k signal; the mean is the fair aggregate):
+
+| ρ | SF VSS/RP | Mumford0 VSS/RP | SF EVPI/RP | Mumford0 EVPI/RP |
 |---:|---:|---:|---:|---:|
-| 1 | 0.46 % | 0.00 % | 0.55 % | 0.00 % |
-| 2 | 0.85 % | 0.13 % | 1.02 % | 0.53 % |
-| 3 | 0.83 % | 1.00 % | 1.18 % | 0.88 % |
-| 4 | 0.90 % | 1.00 % | 1.34 % | 1.34 % |
+| 0.05 | 1.32 % | 0.78 % | 1.42 % | 0.83 % |
+| 0.10 | 0.86 % | 0.66 % | 0.96 % | 0.74 % |
+| 0.15 | 0.30 % | 0.39 % | 0.25 % | 0.36 % |
 
-The native ~30× gap **disappears**. Under equal conditions the networks are
-comparable (~0.5–1.3 % VSS). The residual topology signal is qualitative, not
-a level shift:
+The native ~30× gap is a load/parameter artefact. **Under equal conditions
+the two networks are the same order of magnitude (within ~2×), with a
+crossover:** SF higher at light load (ρ=0.05, ~1.7×), comparable at ρ=0.10
+(~1.3×), Mumford0 slightly higher at ρ=0.15 (~0.8×).
 
-- **Small disruptions (k=1,2):** SF higher — the sparse/hierarchical network
-  is already sensitive to single-edge failures.
-- **Large disruptions (k=3,4):** Mumford0 catches up / exceeds — the dense
-  network only benefits from anticipation once several edges fail.
+Two genuine topological signatures remain:
 
-**Revised topology narrative:** topology does not change the *level* of the
-value of stochastic planning; it changes its *dependence on disruption size*.
-In the sparse network even a single failure is worth anticipating; in the
-dense network only larger multi-edge failures are.
+- **Load dependence:** both decline with ρ, but the sparse SF declines *more
+  steeply* (1.32 → 0.30 %) than the dense Mumford0 (0.78 → 0.39 %). The
+  sparse network benefits most at light load; the dense network is more
+  robust under load.
+- **Disruption-size profile:** SF has VSS > 0 already at a single failure
+  (k=1); Mumford0 has VSS ≈ 0 at k=1 and only gains value at multi-edge
+  failures (k ≥ 3). Topology shifts *which disruption sizes* are worth
+  anticipating, not the overall level.
 
-Caveat: ρ=0.10 is SF's congestion-onset regime (hard MIPs; 7 of 139 hardest
-high-k SF tasks did not finish within walltime). The picture is stable but a
-second matched load factor (ρ=0.05, 0.15) is being run to confirm robustness.
+**Revised topology narrative:** topology does not produce an order-of-magnitude
+difference in the value of stochastic planning. At matched operating points it
+shifts the *load sensitivity* and the *disruption-size profile* of that value.
+
+Caveat: ρ=0.10/0.15 are SF's congestion-onset/over-onset regime (hard MIPs;
+a handful of the hardest high-k SF tasks at ρ=0.05 k4 / ρ=0.15 k3,4 did not
+finish within walltime — those cells are slightly under-sampled). The
+qualitative picture is stable across all three load factors.
 
 ## Open items
 
