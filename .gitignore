@@ -67,11 +67,13 @@ Results/job_*/
 # Data/config_vss.csv reproduces them, so they don't belong in version control.
 Data/*/generated/
 
-# Expanded sweep configs — regenerated from the corresponding Data/config_vss*.csv
-# on every submit. Transient artefacts.
-Data/config_vss*_expanded.csv
+# Expanded sweep configs — regenerated from the corresponding Data/config*.csv
+# on every submit (incl. config_matched_* and config_vss_*). Transient artefacts.
+Data/config*_expanded.csv
 
-# Sidecar with the last submitted array job's metadata, consumed by
-# scripts/aggregate_vss_map.py for auto-detection. Transient.
+# Sidecars with submitted array-job metadata, consumed by the aggregators for
+# auto-detection. Transient.
 .last_vss_job
+.matched_jobs
+.all_sweeps_jobs
 
