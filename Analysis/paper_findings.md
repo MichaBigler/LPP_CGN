@@ -1,144 +1,132 @@
 # Paper Findings — Two-Stage Stochastic Line Planning under Disruptions
 
-Consolidated interpretation of the SiouxFalls (SF) vs Mumford0 study.
-All numbers are medians of the relative metric (value / RP) unless noted.
-Status date: 2026-06-10.
+SiouxFalls (SF) vs Mumford0. All findings below are from the **matched
+program**: both networks run at identical operational parameters and the same
+load factor ρ=0.10, so every within- and cross-network comparison is
+controlled. Metric = relative value (VSS/RP or EVPI/RP); aggregates are the
+**mean over cases** (the median is misleading where the VSS distribution is
+bimodal, e.g. Mumford0 at low k). Status: 2026-06-11.
 
 ## Setup
 
-- **Bounds:** RP = recourse problem (integrated two-stage), WS = wait-and-see,
-  EEV_nom = expected-value-of-nominal-plan, EEV_mean = mean-capacity surrogate.
-  EVPI = RP − WS (value of perfect information), VSS = EEV − RP (value of the
-  stochastic solution over the deterministic mean-plan).
-- **Solver:** Gurobi 12.0.3, gap target 1e-5, time_limit 6000 s/procedure.
-  WS sub-solves pinned to `Threads=1, Seed=42, NumericFocus=2` after a
-  parallel-cut artefact produced WS > RP in ~12 % of Mumford0 cases
-  (now 0 violations across 4108 cases).
-- **Networks:** SF — 24 nodes, 38 edges, density 13.8 %, hierarchical/radial;
-  Mumford0 — 30 nodes, 90 edges, density 20.7 %, dense/grid-like.
+- **Bounds:** RP (recourse/integrated two-stage), WS (wait-and-see),
+  EEV_nom (expected-value-of-nominal-plan). EVPI = RP − WS, VSS = EEV_nom − RP.
+- **Solver:** Gurobi 12.0.3, gap 1e-5, time_limit 12000 s/procedure. WS
+  sub-solves pinned to Threads=1/Seed=42/NumericFocus=2 (a parallel-cut
+  artefact had produced WS > RP; 0 violations after the fix).
+- **Networks:** SF — 24 nodes / 38 edges / density 13.8 %, hierarchical;
+  Mumford0 — 30 nodes / 90 edges / density 20.7 %, dense/grid-like.
+- **Matched setup:** train_capacity=50, max_frequency=10,
+  infrastructure_capacity=10, bypass_multiplier=50, num_od=50 for **both**
+  networks; load factor ρ=0.10 (passenger-km / seat-km at max frequency) set
+  by demand scaling (SF ×2.787, Mumford0 ×0.0368). Only remaining differences:
+  topology and relative demand pattern. ~5025 cases total.
 
-## Finding 1 — Native comparison: SF shows far higher VSS *(superseded, see Finding 8)*
+---
 
-Across all 6 main + sensitivity sweeps (native parameters):
+# Robust findings (matched, controlled)
 
-| | n | EVPI/RP median | VSS/RP median | VSS/RP P95 |
-|---|---:|---:|---:|---:|
-| SF | 2198 | 0.367 % | 0.857 % | 5.91 % |
-| Mumford0 | 1910 | 0.051 % | 0.022 % | 0.36 % |
+## R1 — Replanning cost is the dominant lever, in both networks *(headline)*
 
-Naively ~7× (EVPI) / ~30× (VSS) higher for SF. **This gap is largely a
-parameter/load-regime artefact — see Finding 8.** Do not report the 30× as a
-topology effect.
+VSS/RP mean (k=1), varying frequency-replanning cost:
 
-## Finding 2 — VSS and EVPI diverge under scenario multiplicity *(robust)*
+| cost_repl_freq | 10 | 100 | 1000 |
+|---|---:|---:|---:|
+| SF | 0.02 % | 1.65 % | **19.13 %** |
+| Mumford0 | 0.01 % | 1.50 % | **9.43 %** |
 
-SF, k=1 line_consecutive, increasing failure scenarios per case:
+Spread ≈ 19 pp (SF) / 9 pp (Mumford0) — orders of magnitude larger than any
+other lever (bypass ≈ 0.2–0.3 pp, overdemand ≈ 0.03–0.10 pp). **When
+replanning is expensive, anticipating disruptions is worth a large fraction of
+operating cost; when it is cheap, stochastic planning adds almost nothing.**
+The effect is present in both topologies (stronger in the sparse SF).
 
-| per_run | VSS/RP | EVPI/RP |
-|---:|---:|---:|
-| 1 | 0.71 % | 0.75 % |
-| 3 | 0.00 % | 1.55 % |
-| 5 | 0.00 % | 1.61 % |
+## R2 — Disruption probability has a threshold effect, universal across topology
 
-When failure mass spreads over many scenarios, no single one dominates → the
-nominal-day plan *is* the right first-stage decision → VSS collapses to 0.
-EVPI keeps rising because perfect information still permits per-scenario
-adaptation. The two measures are not interchangeable.
+VSS/RP and EVPI/RP mean (k=1) vs failure probability:
 
-## Finding 3 — p_fail acts as a threshold, not monotonically *(robust)*
-
-SF, single-edge failure. Flat across p_fail = 0.05–0.8 (VSS ≈ 0.74 %,
-EVPI ≈ 0.75 %), then at p_fail ≥ 0.9 they split sharply:
-
-| p_fail | 0.05–0.8 | 0.90 | 0.95 |
+| p_fail | ≤ 0.8 | 0.90 | 0.95 |
 |---|---|---|---|
-| VSS/RP | 0.74 % | 3.23 % | 3.64 % |
-| EVPI/RP | 0.75 % | 0.14 % | 0.07 % |
+| SF — VSS / EVPI | ~0.4 / ~0.7 % | 1.68 / 0.22 % | 1.87 / 0.11 % |
+| Mumford0 — VSS / EVPI | ~0.4 / ~0.4 % | 1.54 / 0.15 % | 1.77 / 0.08 % |
 
-Near certainty, the nominal plan is wrong for an almost-never-occurring day
-(VSS explodes), while RP and WS both converge to "always plan for failure"
-(EVPI collapses). Reinforces Finding 2.
+Flat over a wide range (p ≤ 0.8), then a sharp split at p ≥ 0.9: VSS jumps
+(the nominal-day plan is wrong for an almost-certain disruption) while EVPI
+collapses (RP and WS both converge to "always plan for failure"). **Same
+pattern in both networks** — topology-independent.
 
-## Finding 4 — Replanning cost is the dominant operational lever *(robust)*
+## R3 — Load factor governs the value, more than topology
 
-Spread of median VSS/RP across each sensitivity axis (percentage points):
+From the matched load-factor curve (ρ ∈ {0.05, 0.10, 0.15}, mean over k):
+the value of stochastic planning **declines with load** in both networks
+(SF 1.32 → 0.30 %, Mumford0 0.78 → 0.39 % VSS/RP). Stochastic planning pays
+off most in lightly-loaded networks; under congestion, deterministic bypass
+overflow dominates and no plan choice helps. SF declines more steeply (it
+reaches its congestion onset earlier).
 
-| | replcost | p_fail | traincap | bypass | overdemand |
-|---|---:|---:|---:|---:|---:|
-| SF | 3.63 | 2.90 | 0.94 | 0.57 | 0.30 |
-| Mumford0 | 1.00 | 0.15 | 0.04 | 0.04 | 0.02 |
+## R4 — Spatial failure pattern does not systematically matter
 
-Expensive frequency replanning makes anticipation most valuable, in both
-networks.
+At matched conditions, selection mode (line_consecutive / line_all /
+share_stop / random) produces no consistent ordering of VSS — all ~0.4–0.7 %
+in both networks. It is the *probability* and *cost* structure (R1, R2), not
+the *spatial pattern*, that drives the value.
 
-## Finding 5 — k-trend *(solid for k=1–4)*
+## R5 — Topology does NOT produce a level difference in VSS *(key methodological result)*
 
-Native main map, VSS/RP median by disruption size k:
+At matched ρ=0.10, the VSS/RP k-profile is essentially identical:
 
-- SF: ~1 % flat for k=1–4 (k=5,6 noisy, n=11/4).
-- Mumford0: constant ~0.03 % across all k.
+| k | 1 | 2 | 3 | 4 |
+|---|---:|---:|---:|---:|
+| SF | 0.47 % | 0.60 % | 0.36 % | 0.53 % |
+| Mumford0 | 0.46 % | 0.74 % | 0.44 % | 0.67 % |
 
-## Finding 6 — Spatial failure pattern has no systematic effect *(negative result)*
+Within ~1.2×, with Mumford0 often higher. **The dense and the sparse network
+derive comparable value from stochastic planning once load and parameters are
+equalized.** What a naïve native comparison reports as a ~30× topology effect
+(see "Artefacts" below) is entirely explained by the two networks operating at
+different load factors and capacities.
 
-SF, per_run=1, VSS/RP by selection mode × k — no monotone ordering
-(`random` is highest at k=2). It is the *probability structure* of the
-disruption (Findings 2/3), not its *spatial pattern*, that drives VSS.
+---
 
-## Finding 7 — In SF, load and vulnerability co-locate on hub edges *(belegt)*
+# Artefacts removed by the matched design
 
-Shortest-path edge-load concentration: SF peak/mean 2.65, busiest edges are
-the hub corridors 2-6 / 10-16 / 11-14 — the same edges with the highest VSS.
-NB: a previously suspected "Mumford0 congests at higher load" claim is
-**confounded** (the load-test used unequal native parameters) and is dropped.
-Static structural metrics do not support it: Mumford0 actually has higher
-load concentration (peak/mean 4.76) and sparser line coverage (0.91 vs 3.42
-lines/edge).
+These appeared in the native-parameter sweeps and do **not** survive matching:
 
-## Finding 8 — Load-matched: the topology gap collapses to within ~2× *(key result)*
+- **"~30× topology gap" (native):** SF native VSS/RP ≈ 0.86 %, Mumford0 ≈
+  0.02 %. Pure load/parameter confound — SF ran at ρ=0.039, Mumford0 at ρ=0.27
+  with 5× larger trains. At matched ρ the gap vanishes (R5). See
+  `Analysis/matched/topology_collapse.png`.
+- **"VSS → 0 collapse under scenario multiplicity" (native):** at SF's native
+  light load, per_run = 3,5 drove VSS to exactly 0. At matched ρ=0.10 there is
+  no collapse (SF VSS stays 0.29–0.50 % across per_run = 1…8). A light-load
+  phenomenon, not a general property.
 
-Both networks run at **identical operational parameters** (train_capacity=50,
-max_frequency=10, infrastructure_capacity=10, bypass_multiplier=50) and the
-**same load factor ρ** (passenger-km / seat-km at max frequency), achieved by
-demand scaling. Confirmed over **three matched load factors** ρ ∈ {0.05, 0.10,
-0.15}. Only remaining differences: topology and relative demand pattern.
+**Methodological takeaway for the paper:** cross-network comparisons of
+stochastic-programming value are dominated by the operating regime (load
+factor, capacity, replanning cost). Matching the load factor is essential;
+without it, regime differences masquerade as topology effects.
 
-VSS/RP and EVPI/RP, **mean over k=1..4** (the median is misleading here —
-Mumford0's VSS is bimodal: ≈0 at k=1, substantial at k=3,4 — so the median
-hides the high-k signal; the mean is the fair aggregate):
+---
 
-| ρ | SF VSS/RP | Mumford0 VSS/RP | SF EVPI/RP | Mumford0 EVPI/RP |
-|---:|---:|---:|---:|---:|
-| 0.05 | 1.32 % | 0.78 % | 1.42 % | 0.83 % |
-| 0.10 | 0.86 % | 0.66 % | 0.96 % | 0.74 % |
-| 0.15 | 0.30 % | 0.39 % | 0.25 % | 0.36 % |
+# Measurement note — VSS vs EVPI
 
-The native ~30× gap is a load/parameter artefact. **Under equal conditions
-the two networks are the same order of magnitude (within ~2×), with a
-crossover:** SF higher at light load (ρ=0.05, ~1.7×), comparable at ρ=0.10
-(~1.3×), Mumford0 slightly higher at ρ=0.15 (~0.8×).
+VSS (vs the deterministic mean-plan) and EVPI (vs perfect information) respond
+differently and should be reported separately: near-certain disruption
+(R2) makes VSS large but EVPI small. They are not interchangeable summaries of
+"the value of stochastic planning".
 
-Two genuine topological signatures remain:
+---
 
-- **Load dependence:** both decline with ρ, but the sparse SF declines *more
-  steeply* (1.32 → 0.30 %) than the dense Mumford0 (0.78 → 0.39 %). The
-  sparse network benefits most at light load; the dense network is more
-  robust under load.
-- **Disruption-size profile:** SF has VSS > 0 already at a single failure
-  (k=1); Mumford0 has VSS ≈ 0 at k=1 and only gains value at multi-edge
-  failures (k ≥ 3). Topology shifts *which disruption sizes* are worth
-  anticipating, not the overall level.
+# Figures
 
-**Revised topology narrative:** topology does not produce an order-of-magnitude
-difference in the value of stochastic planning. At matched operating points it
-shifts the *load sensitivity* and the *disruption-size profile* of that value.
+- `Analysis/matched/replcost_lever.png` — R1
+- `Analysis/matched/pfail_threshold.png` — R2
+- `Analysis/matched/topology_collapse.png` — R5 (+ native overlay)
+- `Analysis/loadmatch/matched_curve_3point.png` — R3
 
-Caveat: ρ=0.10/0.15 are SF's congestion-onset/over-onset regime (hard MIPs;
-a handful of the hardest high-k SF tasks at ρ=0.05 k4 / ρ=0.15 k3,4 did not
-finish within walltime — those cells are slightly under-sampled). The
-qualitative picture is stable across all three load factors.
+# Open items
 
-## Open items
-
-- Confirm Finding 8 at additional matched load factors (ρ=0.05, 0.15).
-- Finalize SF ρ=0.10 high-k tasks (longer walltime).
-- Optional: third network (rejected — Mumford1 too large/unrealistic).
+- Optional robustness: full matched program also at ρ=0.05 (compute budget is
+  not a constraint — fully subsidised to CHF 1000/yr; ~CHF 90 used so far).
+- Sensitivities currently k=1,2; extend to k=3,4 if a k-dependence of the
+  levers is of interest.
