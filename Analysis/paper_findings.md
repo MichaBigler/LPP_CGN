@@ -108,6 +108,63 @@ without it, regime differences masquerade as topology effects.
 
 ---
 
+# Deep dive (beyond the headline levels)
+
+Even though topology does not change the *level* of VSS (R5), the richer
+structure reveals genuine topology signatures and risk insights:
+
+## D1 — Recourse composition is topology-specific
+
+Splitting replanning cost into frequency- vs line-cost (VSS/RP %, k=1):
+
+| | freq-cost 10/100/1000 | line-cost 50/500/5000 |
+|---|---|---|
+| SF | 0.02 / 1.65 / 19.13 | 7.16 / 5.92 / 7.73 (flat) |
+| Mumford0 | 0.01 / 1.50 / 9.43 | 0.04 / 1.75 / 9.15 (rises) |
+
+SF's value is driven by *frequency*-replanning cost (line cost irrelevant);
+Mumford0's needs *line*-replanning cost. Mechanism: the sparse network recovers
+by re-timing (frequency) — it has few alternative lines; the dense network
+recovers by rerouting (lines). Topology shows up in *what kind of recourse*
+carries the value, not in its level. (`Analysis/matched/replcost_2d.png`)
+
+## D2 — Risk profile is topology-specific (same mean, different distribution)
+
+At cost_repl_freq=1000, k=1 (VSS/RP):
+
+| | mean | median | P90 | max | share ≈0 |
+|---|---:|---:|---:|---:|---:|
+| SF | 19.1 % | 16.4 % | 37.6 % | 59 % | 23 % |
+| Mumford0 | 9.4 % | 0.0 % | 35.0 % | 101 % | 58 % |
+
+Mumford0 is heavy-tailed: ~60 % of disruptions are absorbed (VSS≈0) but a
+minority are catastrophic (up to 101 %, replanning exceeds nominal cost). SF is
+broadly distributed (only 23 % zero, substantial median). Dense = "usually
+robust, occasionally catastrophic"; sparse = "uniformly sensitive" — relevant
+for risk-averse planning. Confirmed across all k (Mumford0 45–68 % zero-VSS vs
+SF 12–36 %). (`Analysis/matched/risk_profile_cdf.png`)
+
+## D3 — Lever strength scales with disruption size
+
+The replanning-cost spread grows from k=1 to k=2: SF 19 → 26 pp, Mumford0
+9 → 15 pp. Larger disruptions amplify the dominant lever; bypass/overdemand
+stay negligible at both k.
+
+## D4 — VSS and EVPI emphasize different regimes
+
+EVPI/VSS ratio (k=1): replanning-cost regime is VSS-dominated (≈0.3 — a good
+first-stage plan matters more than perfect information), whereas the
+bypass/overdemand regime is EVPI-comparable (≈1.0–1.6). Which metric "matters"
+is regime-dependent.
+
+## Weak/null levers (also a result)
+
+overdemand is essentially flat (0.37–0.66 %, noise) — the overdemand penalty
+does not drive VSS. bypass shows only a mild upward trend (costlier bypass →
+slightly more value), spread < 0.3 pp.
+
+---
+
 # Measurement note — VSS vs EVPI
 
 VSS (vs the deterministic mean-plan) and EVPI (vs perfect information) respond
@@ -122,6 +179,8 @@ differently and should be reported separately: near-certain disruption
 - `Analysis/matched/replcost_lever.png` — R1
 - `Analysis/matched/pfail_threshold.png` — R2
 - `Analysis/matched/topology_collapse.png` — R5 (+ native overlay)
+- `Analysis/matched/replcost_2d.png` — D1 (recourse composition)
+- `Analysis/matched/risk_profile_cdf.png` — D2 (risk profile)
 - `Analysis/loadmatch/matched_curve_3point.png` — R3
 
 # Open items
