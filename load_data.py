@@ -142,6 +142,7 @@ def parse_config_row(cfg_row: dict) -> Config:
         train_capacity=_as_int(cfg_row.get('train_capacity'), 200),
         infrastructure_capacity=_as_int(cfg_row.get('infrastructure_capacity'), 10),
         max_frequency=_as_int(cfg_row.get('max_frequency'), 5),
+        demand_scale=_as_float(cfg_row.get('demand_scale'), 1.0),
         
         cost_repl_freq=_as_float(cfg_row.get('cost_repl_freq'), 0.0),
         cost_repl_line=_as_float(cfg_row.get('cost_repl_line'), 0.0),
@@ -447,6 +448,15 @@ def load_and_build(
         cand = cand.sort_values('demand', ascending=False)
         od_df = cand.head(cfg.num_od).copy()
         print(f"[od-limit] kept {len(od_df)} of {before} positive-demand ODs (num_od={cfg.num_od}).")
+
+    # 4b) optional uniform demand scaling (load-factor studies). Applied after
+    # the num_od selection so the *same* OD pairs are kept regardless of scale
+    # (uniform positive scaling preserves the demand ranking).
+    scale = getattr(cfg, "demand_scale", 1.0) or 1.0
+    if abs(float(scale) - 1.0) > 1e-12:
+        od_df = od_df.copy()
+        od_df['demand'] = od_df['demand'].astype(float) * float(scale)
+        print(f"[demand-scale] applied factor {scale} to {len(od_df)} OD demand values.")
 
     # 5) domain bundle (typed config dict)
     domain = DomainData(

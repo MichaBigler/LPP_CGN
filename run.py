@@ -349,7 +349,7 @@ def main():
     # mode where the sbatch picked up a stale expanded config and silently
     # ran the wrong parameters.
     print(f"[run.py] config={cfg_path}, rows={len(cfg_df)}")
-    for k in ("num_od", "waiting_time_frequency", "bypass_multiplier"):
+    for k in ("num_od", "waiting_time_frequency", "bypass_multiplier", "demand_scale"):
         if k in cfg_df.columns:
             uniq = cfg_df[k].unique()
             print(f"[run.py]   {k} = {list(uniq)}")
