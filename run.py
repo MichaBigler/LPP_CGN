@@ -22,7 +22,7 @@ from solve_cgn_one_stage import solve_one_stage
 from solve_cgn_separated import solve_two_stage_separated
 from solve_cgn_integrated import solve_two_stage_integrated
 from solve_cgn_wait_and_see import solve_wait_and_see
-from solve_cgn_eev import solve_eev
+from solve_cgn_eev import solve_eev, solve_two_stage_eev
 
 from log import RunBatchLogger
 from compute_bounds import compute_bounds
@@ -166,6 +166,8 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
             m, solution, artifacts = solve_wait_and_see(domain, model)
         elif proc in ("eev", "expected_value"):
             m, solution, artifacts = solve_eev(domain, model)
+        elif proc in ("two_stage_eev", "two_stage_expected_value"):
+            m, solution, artifacts = solve_two_stage_eev(domain, model)
         else:
             print(f"[WARN] unknown procedure '{proc}', falling back to one_stage")
             m, solution, artifacts = solve_one_stage(domain, model)
