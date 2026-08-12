@@ -235,8 +235,11 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
             m.addConstr(d[g, s] >= -(f_expr_s[s][ell_rep] - f0_expr[ell_rep]), name=f"d_neg[g{g},s{s}]")
 
     # =================================================================
-    # Objective: stage-1 + expected stage-2 (no repl) + path repl + freq repl
+    # Objective: first_stage_weight * stage-1 + second_stage_weight * ( expected stage-2 (no repl) + path repl + freq repl)
     # =================================================================
+    stage1_weight = domain.config["first_stage_weight"]
+    stage2_weight = 1.0 - stage1_weight
+
     time_w = float(domain.config.get("travel_time_cost_mult", 1.0))
     wait_w = float(domain.config.get("waiting_time_cost_mult", 1.0))
     op_w   = float(domain.config.get("line_operation_cost_mult", 1.0))
@@ -254,7 +257,16 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
         for s in range(S)
     )
 
-    m.setObjective(stage1_obj + stage2_norepl_exp + repl_path_exp + repl_freq_exp, GRB.MINIMIZE)
+    stage2_obj_exp = (
+            stage2_norepl_exp
+            + repl_path_exp
+            + repl_freq_exp
+    )
+
+    stage1_contribution = stage1_weight * stage1_obj
+    stage2_contribution = stage2_weight * stage2_obj_exp
+
+    m.setObjective(stage1_contribution + stage2_contribution, GRB.MINIMIZE)
 
     # Solver params: domain.config first, then gurobi_params overrides. This
     # ordering lets callers like solve_wait_and_see force per-sub-solve
@@ -364,10 +376,10 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
                               + repl_freq_val + repl_path_val),
             })
 
-    # Global aggregates
+    # Global weighted aggregates
     obj_total = float(m.ObjVal) if m.SolCount else None
-    obj_stage1_val = float(stage1_obj.getValue()) if m.SolCount else None
-    obj_stage2_exp_val = float((stage2_norepl_exp + repl_path_exp + repl_freq_exp).getValue()) if m.SolCount else None
+    obj_stage1_val = float(stage1_contribution.getValue()) if m.SolCount else None
+    obj_stage2_exp_val = float(stage2_contribution.getValue()) if m.SolCount else None
     repl_cost_path_exp_val = float(repl_path_exp.getValue()) if m.SolCount else None
     repl_cost_freq_exp_val = float(repl_freq_exp.getValue()) if m.SolCount else None
 
@@ -388,14 +400,21 @@ def solve_two_stage_integrated(domain, model, *, gurobi_params=None):
                 blocked_arcs = -1
             # Slice obj for this scenario (un-weighted), as RP "sees" it:
             #   slice_s = stage1(x*) + stage2(x*, s) + repl(x*, s)
+            #   making sure first/second-stage weight is applied everywhere
+
+            stage2_s_obj = (
+               float(scd.get("cost_time") or 0.0)
+               + float(scd.get("cost_bypass") or 0.0)
+               + float(scd.get("cost_wait") or 0.0)
+               + float(scd.get("cost_oper") or 0.0)
+               + float(scd.get("cost_repl_freq") or 0.0)
+               + float(scd.get("cost_repl_path") or 0.0)
+
+            )
+
             slice_s = (
-                (obj_stage1_val or 0.0)
-                + float(scd.get("cost_time") or 0.0)
-                + float(scd.get("cost_bypass") or 0.0)
-                + float(scd.get("cost_wait") or 0.0)
-                + float(scd.get("cost_oper") or 0.0)
-                + float(scd.get("cost_repl_freq") or 0.0)
-                + float(scd.get("cost_repl_path") or 0.0)
+                stage1_weight* (costs0.get("objective") or 0.0)
+                + stage2_weight* stage2_s_obj
             )
             print(
                 f"[RP-DBG] slice s={s} (scen_id={int(scd.get('id', -1))}, "

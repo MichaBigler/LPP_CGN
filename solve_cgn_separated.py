@@ -427,8 +427,25 @@ def _solve_stage2_given_first_stage(domain, model, sol0, art0, *, gurobi_params=
     ) for s in range(S)]
 
     # ----------------------------- Return payloads -----------------------------
+    # Have first and second stage weights
+    stage1_weight = domain.config["first_stage_weight"]
+    stage2_weight = 1.0 - stage1_weight
+
     # If obj2_exp is not defined, then we define the total objective as None
-    total_objective = (sol0["costs_0"]["objective"] + obj2_exp) if obj2_exp is not None else None
+    if obj2_exp is not None:
+        obj_stage1_weighted = (
+                stage1_weight * sol0["costs_0"]["objective"]
+        )
+        obj_stage2_weighted = (
+                stage2_weight * obj2_exp
+        )
+        total_objective = (
+                obj_stage1_weighted + obj_stage2_weighted
+        )
+    else:
+        obj_stage1_weighted = None
+        obj_stage2_weighted = None
+        total_objective = None
 
     # Get worst gap - where if one model did not find any solution, then gap should be None
     if any(math.isinf(per_s[s]["opt_gap"]) for s in range(S)):
@@ -451,8 +468,8 @@ def _solve_stage2_given_first_stage(domain, model, sol0, art0, *, gurobi_params=
         chosen_freq_stage1=chosen_freq0,
         chosen_freq_stage2=[ps["chosen_freq"] for ps in per_s],
         scenarios=scenarios,
-        obj_stage1=sol0["costs_0"]["objective"],
-        obj_stage2_exp=obj2_exp,
+        obj_stage1=obj_stage1_weighted,
+        obj_stage2_exp=obj_stage2_weighted,
         repl_cost_freq_exp=repl_cost_freq_exp,
         repl_cost_path_exp=repl_cost_path_exp,
         repl_cost_exp=repl_cost_exp,

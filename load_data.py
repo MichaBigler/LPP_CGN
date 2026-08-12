@@ -137,6 +137,7 @@ def parse_config_row(cfg_row: dict) -> Config:
         travel_time_cost_mult=_as_float(cfg_row.get('travel_time_cost_mult'), 1.0),
         waiting_time_cost_mult=_as_float(cfg_row.get('waiting_time_cost_mult'), 1.0),
         line_operation_cost_mult=_as_float(cfg_row.get('line_operation_cost_mult'), 1.0),
+        first_stage_weight=cfg_row.get('first_stage_weight', 0.5),
 
         num_od=_as_int(cfg_row.get('num_od'), 0),
         train_capacity=_as_int(cfg_row.get('train_capacity'), 200),

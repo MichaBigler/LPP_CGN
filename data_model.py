@@ -88,6 +88,7 @@ class Config:
     travel_time_cost_mult: float = 1.0
     waiting_time_cost_mult: float = 1.0
     line_operation_cost_mult: float = 1.0
+    first_stage_weight: float = 0.5
 
     # Resource limits / sizes
     num_od: int = 0
@@ -119,6 +120,21 @@ class Config:
     # Candidate generation knobs
     cand_detour_count: int = 0
     cand_ksp_count: int = 0
+
+    def __post_init__(self):
+        try:
+            lambda_value = float(self.first_stage_weight)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"first_stage_weight must be numeric, got {self.first_stage_weight!r}"
+            ) from exc
+
+        if not 0.0 <= lambda_value <= 1.0:
+            raise ValueError(
+                f"first_stage_weight must be between 0 and 1, got {lambda_value}"
+            )
+
+        self.first_stage_weight = lambda_value
 
     def to_dict(self) -> dict:
         """Return a plain dictionary (useful for logging/serialization)."""

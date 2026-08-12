@@ -4,7 +4,7 @@ import pandas as pd
 # What to generate
 GENERATE_SCENARIO_INFRA = True
 GENERATE_CONFIG = True
-EXCLUDE_EDGES = [30, 16, 23, 17]
+EXCLUDE_EDGES = [30, 16, 4, 17, 20, 22, 5]
 
 # ============================================================================
 # Configuration
@@ -30,6 +30,7 @@ BASE_CONFIG = {
     "travel_time_cost_mult": 1,
     "waiting_time_cost_mult": 2,
     "line_operation_cost_mult": 20,
+    "first_stage_weight": 0.5,
     "cost_repl_freq": 50,
     "cost_repl_line": 200,
     "repl_budget": -5,
@@ -97,7 +98,7 @@ def generate_config(edge_giv_path: str, config_output: str):
     rows = []
     for _, r in normal_edges.iterrows():
         eid = int(r['id'])
-        for procedure in ("separated",): #("integrated", "separated")
+        for procedure in ("two_stage_eev", ): #("integrated", "separated")
             for waiting in {False}:
                 row = BASE_CONFIG.copy()
                 row["procedure"] = procedure
@@ -112,6 +113,7 @@ def generate_config(edge_giv_path: str, config_output: str):
         "source", "network", "scenario_line_data", "procedure",
         "routing_agg", "waiting_time_frequency", "gap", "time_limit",
         "travel_time_cost_mult", "waiting_time_cost_mult", "line_operation_cost_mult",
+        "first_stage_weight",
         "cost_repl_freq", "cost_repl_line", "repl_budget", "bypass_multiplier",
         "overdemand_threshold", "overdemand_multiplier", "num_od", "train_capacity",
         "infrastructure_capacity", "max_frequency", "scenario_infra_id", "scenario_prob_id"
