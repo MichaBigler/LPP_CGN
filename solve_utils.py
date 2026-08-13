@@ -12,6 +12,7 @@ It provides:
 """
 
 import numpy as np
+from gurobipy import GRB
 
 from optimisation import (
     od_pairs,
@@ -168,3 +169,71 @@ def _cand_counts(domain):
     D = int(domain.config.get("cand_detour_count", 0))
     K = int(domain.config.get("cand_ksp_count", 0))
     return max(0, D), max(0, K)
+
+# ---------- solver status helpers ----------
+
+_STATUS_PRIORITY = {
+    int(GRB.OPTIMAL): 0,
+
+    int(GRB.USER_OBJ_LIMIT): 10,
+    int(GRB.SOLUTION_LIMIT): 20,
+
+    int(GRB.ITERATION_LIMIT): 30,
+    int(GRB.NODE_LIMIT): 35,
+    int(GRB.WORK_LIMIT): 40,
+    int(GRB.TIME_LIMIT): 50,
+    int(GRB.MEM_LIMIT): 55,
+
+    int(GRB.INTERRUPTED): 60,
+    int(GRB.SUBOPTIMAL): 70,
+    int(GRB.CUTOFF): 75,
+
+    int(GRB.UNBOUNDED): 80,
+    int(GRB.INF_OR_UNBD): 85,
+    int(GRB.INFEASIBLE): 90,
+    int(GRB.NUMERIC): 100,
+}
+
+_STATUS_NAMES = {
+    int(GRB.OPTIMAL): "OPTIMAL",
+    int(GRB.USER_OBJ_LIMIT): "USER_OBJ_LIMIT",
+    int(GRB.SOLUTION_LIMIT): "SOLUTION_LIMIT",
+    int(GRB.ITERATION_LIMIT): "ITERATION_LIMIT",
+    int(GRB.NODE_LIMIT): "NODE_LIMIT",
+    int(GRB.WORK_LIMIT): "WORK_LIMIT",
+    int(GRB.TIME_LIMIT): "TIME_LIMIT",
+    int(GRB.MEM_LIMIT): "MEM_LIMIT",
+    int(GRB.INTERRUPTED): "INTERRUPTED",
+    int(GRB.SUBOPTIMAL): "SUBOPTIMAL",
+    int(GRB.CUTOFF): "CUTOFF",
+    int(GRB.UNBOUNDED): "UNBOUNDED",
+    int(GRB.INF_OR_UNBD): "INF_OR_UNBD",
+    int(GRB.INFEASIBLE): "INFEASIBLE",
+    int(GRB.NUMERIC): "NUMERIC",
+}
+
+
+def _aggregate_status_codes(status_codes):
+    """
+    Return the most serious status among all required solves.
+
+    Returns:
+        (status_code, status_name)
+        e.g. (GRB.TIME_LIMIT, "TIME_LIMIT")
+    """
+    if not status_codes:
+        return -1, "UNKNOWN"
+
+    codes = [int(code) for code in status_codes]
+
+    final_status_code = max(
+        codes,
+        key=lambda code: _STATUS_PRIORITY.get(code, 1000)
+    )
+
+    final_status = _STATUS_NAMES.get(
+        final_status_code,
+        str(final_status_code)
+    )
+
+    return final_status_code, final_status

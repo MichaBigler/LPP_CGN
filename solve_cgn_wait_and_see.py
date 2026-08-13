@@ -42,7 +42,9 @@ from gurobipy import GRB
 
 from solve_cgn_integrated import solve_two_stage_integrated
 from solve_cgn_separated import _x_to_1d
-
+from solve_utils import (
+    _aggregate_status_codes
+)
 
 # Enable verbose per-sub-solve diagnostics by exporting LPP_DEBUG_WS=1.
 # Used to investigate WS > RP violations: prints z_s, stage1/stage2 breakdown,
@@ -51,6 +53,7 @@ from solve_cgn_separated import _x_to_1d
 _DEBUG_WS = os.environ.get("LPP_DEBUG_WS", "").strip().lower() in ("1", "true", "yes")
 
 
+#This function is replaced in the code by _aggregate_status_codes and could be deleted
 def _agg_status_code(per_scen_codes: List[int]) -> int:
     """OPTIMAL only if every sub-solve was OPTIMAL; else surface the first
     non-OPTIMAL code so operators see the real failure mode."""
@@ -298,9 +301,14 @@ def solve_wait_and_see(domain, model, *, gurobi_params: Optional[Dict[str, Any]]
 
     worst_gap = max(gaps) if gaps else None
 
+    # Get "worst" status
+    final_status_code, final_status = _aggregate_status_codes(
+        status_codes
+    )
+
     solution = dict(
-        status_code=_agg_status_code(status_codes),
-        status=_agg_status_code(status_codes),
+        status_code=final_status_code,
+        status=final_status,
         runtime_s=sum(runtimes),
         opt_gap=worst_gap,
         # No single WS first-stage plan exists by construction.

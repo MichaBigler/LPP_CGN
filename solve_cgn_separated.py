@@ -16,7 +16,8 @@ from optimisation import (
 )
 from solve_utils import (
     _freq_values_from_config, _routing_is_aggregated, _waiting_mode,
-    _add_flows, _line_lengths, _group_lengths, _rep_line_of_group, _cand_counts
+    _add_flows, _line_lengths, _group_lengths, _rep_line_of_group, _cand_counts,
+    _aggregate_status_codes
 )
 from solve_cgn_one_stage import solve_one_stage
 from data_model import CandidateConfig
@@ -460,9 +461,16 @@ def _solve_stage2_given_first_stage(domain, model, sol0, art0, *, gurobi_params=
     stage2_runtimes = [per_s[s]["runtime_s"] or 0.0 for s in range(S)]
     total_runtime = stage1_runtime + sum(stage2_runtimes)
 
+    # Get worst Gurobi-Status
+    status_codes = [sol0["status_code"]]
+    status_codes.extend(per_s[s]["status"] for s in range(S))
+    final_status_code, final_status = _aggregate_status_codes(
+        status_codes
+    )
+
     solution = dict(
-        status_code=int(sol0["status_code"]),
-        status=sol0["status"],
+        status_code=final_status_code,
+        status=final_status,
         runtime_s=total_runtime,
         opt_gap=worst_gap,
         chosen_freq_stage1=chosen_freq0,
