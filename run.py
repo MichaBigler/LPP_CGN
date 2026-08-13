@@ -265,7 +265,19 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
                     freqs_per_s=(solution.get("chosen_freq_stage2") or []),
                 )
 
-        # ----- 4) Edge flows logs -----
+        # ----- 4) Detailed cost breakdown -----
+        cost_breakdown_rows = logger.build_cost_breakdown_rows(
+            i,
+            cfg_row_dict,
+            solution,
+            procedure=proc,
+            stage1_weight=domain.config["first_stage_weight"],
+        )
+
+        with log_lock:
+            logger.append_cost_breakdown_rows(cost_breakdown_rows)
+
+        # ----- 5) Edge flows logs -----
         with log_lock:
             if artifacts.get("cgn_stage1") is not None and artifacts.get("x_stage1") is not None:
                 logger.write_edge_passenger_flows(
@@ -414,6 +426,7 @@ def main():
                     traceback.print_exc()
 
     print(f"\nBase log: {logger.base_log_path}")
+    print(f"\nCost breakdown: {logger.cost_breakdown_path}")
 
     # End-of-batch hook: aggregate WS/RP/EEV_nom/EEV_mean per run_group_id and
     # write `bounds_summary.csv` next to base_log.csv. Incomplete groups still

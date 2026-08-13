@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 import pandas as pd
 import csv
+import math
 from collections import defaultdict
 
 
@@ -27,6 +28,36 @@ BASE_EXTRA_COLS = [
     "cost_time", "cost_time_base", "cost_time_over", "cost_bypass", "cost_wait", "cost_oper",
     "obj_stage1", "obj_stage2_exp",
     "repl_cost_freq_exp", "repl_cost_path_exp", "repl_cost_exp",
+]
+
+# Columns for detailed cost breakdown
+COST_BREAKDOWN_COLS = [
+    "run",
+    "run_group_id",
+    "procedure",
+    "scenario_infra_id",
+    "scenario_prob_id",
+
+    "stage",
+    "scenario_id",
+    "probability",
+    "stage_weight",
+
+    "cost_time",
+    "cost_time_base",
+    "cost_time_over",
+    "cost_bypass",
+    "cost_wait",
+    "cost_oper",
+
+    "repl_cost_freq",
+    "repl_cost_path",
+    "repl_cost",
+
+    "objective_unweighted",
+    "objective_contribution",
+
+    "sanity_check",
 ]
 
 
@@ -112,6 +143,22 @@ class RunBatchLogger:
         if not os.path.exists(self.base_log_path):
             pd.DataFrame(columns=self.base_columns).to_csv(self.base_log_path, sep=';', index=False)
 
+
+        # Detailed objective decomposition, one file for the complete batch
+        self.cost_breakdown_columns = COST_BREAKDOWN_COLS
+        self.cost_breakdown_path = os.path.join(
+            self.out_dir, "cost_breakdown.csv"
+        )
+
+        if not os.path.exists(self.cost_breakdown_path):
+            pd.DataFrame(
+                columns=self.cost_breakdown_columns
+            ).to_csv(
+                self.cost_breakdown_path,
+                sep=';',
+                index=False
+            )
+
     # ---------- directory helpers ----------
 
     def run_dir(self, run_index: int, *, name: str | None = None) -> str:
@@ -138,6 +185,272 @@ class RunBatchLogger:
         """Append a single line to base_log.csv (flush immediately)."""
         df = pd.DataFrame([row_dict], columns=self.base_columns)
         df.to_csv(self.base_log_path, sep=';', index=False, mode='a', header=False)
+
+    # cost_breakdown adding rows that belong together
+
+    def build_cost_breakdown_rows(
+            self,
+            run_index: int,
+            cfg_row: Dict[str, Any],
+            solution: Dict[str, Any],
+            *,
+            procedure: str,
+            stage1_weight: float,
+    ) -> List[Dict[str, Any]]:
+        """
+        Build detailed objective-decomposition rows for one run.
+
+        Cost components are not scaled by stage weights.
+        Individual stage-2 scenario rows are also not probability-scaled.
+        """
+
+        common = {
+            "run": int(run_index),
+            "run_group_id": cfg_row.get("run_group_id"),
+            "procedure": procedure,
+            "scenario_infra_id": cfg_row.get("scenario_infra_id"),
+            "scenario_prob_id": cfg_row.get("scenario_prob_id"),
+        }
+
+        # Standalone one-stage model
+        if procedure in ("one", "one_stage"):
+            nom = solution.get("costs_0") or {}
+
+            return [{
+                **common,
+                "stage": "stage1",
+                "scenario_id": None,
+                "probability": None,
+                "stage_weight": 1.0,
+
+                "cost_time": nom.get("time"),
+                "cost_time_base": nom.get("time_base"),
+                "cost_time_over": nom.get("time_over"),
+                "cost_bypass": nom.get("bypass"),
+                "cost_wait": nom.get("wait"),
+                "cost_oper": nom.get("oper"),
+
+                "repl_cost_freq": None,
+                "repl_cost_path": None,
+                "repl_cost": None,
+
+                "objective_unweighted": nom.get("objective"),
+                "objective_contribution": nom.get("objective"),
+                "sanity_check": None,
+            }]
+
+        # TODO Handle WS separately later
+        if procedure in ("ws", "wait_and_see"):
+            return []
+
+        # Normal 2-stage procedures
+        stage2_weight = 1.0 - stage1_weight
+
+        nom = solution.get("costs_0") or {}
+        scenarios = solution.get("scenarios") or []
+
+        stage1_obj = nom.get("objective")
+
+        stage1_row = {
+            **common,
+            "stage": "stage1",
+            "scenario_id": None,
+            "probability": None,
+            "stage_weight": stage1_weight,
+
+            "cost_time": nom.get("time"),
+            "cost_time_base": nom.get("time_base"),
+            "cost_time_over": nom.get("time_over"),
+            "cost_bypass": nom.get("bypass"),
+            "cost_wait": nom.get("wait"),
+            "cost_oper": nom.get("oper"),
+
+            "repl_cost_freq": None,
+            "repl_cost_path": None,
+            "repl_cost": None,
+
+            "objective_unweighted": stage1_obj,
+            "objective_contribution": (
+                stage1_weight * stage1_obj
+                if stage1_obj is not None
+                else None
+            ),
+            "sanity_check": None,
+        }
+
+        rows = [stage1_row]
+
+        all_scenarios_valid = (
+                len(scenarios) > 0
+                and all(
+            s.get("objective") is not None
+            for s in scenarios
+        )
+        )
+
+        def expected_value(key):
+            if not all_scenarios_valid:
+                return None
+
+            total = 0.0
+
+            for s in scenarios:
+                value = s.get(key)
+
+                if value is None:
+                    return None
+
+                total += s.get("prob", 0.0) * value
+
+            return total
+
+        stage2_exp_obj = expected_value("objective")
+
+        stage2_exp_row = {
+            **common,
+            "stage": "stage2_exp",
+            "scenario_id": None,
+            "probability": None,
+            "stage_weight": stage2_weight,
+
+            "cost_time": expected_value("cost_time"),
+            "cost_time_base": expected_value("cost_time_base"),
+            "cost_time_over": expected_value("cost_time_over"),
+            "cost_bypass": expected_value("cost_bypass"),
+            "cost_wait": expected_value("cost_wait"),
+            "cost_oper": expected_value("cost_oper"),
+
+            "repl_cost_freq": expected_value("cost_repl_freq"),
+            "repl_cost_path": expected_value("cost_repl_path"),
+            "repl_cost": expected_value("cost_repl"),
+
+            "objective_unweighted": stage2_exp_obj,
+            "objective_contribution": (
+                stage2_weight * stage2_exp_obj
+                if stage2_exp_obj is not None
+                else None
+            ),
+            "sanity_check": None,
+        }
+
+        rows.append(stage2_exp_row)
+
+        for s in scenarios:
+            prob = s.get("prob")
+            scen_obj = s.get("objective")
+
+            rows.append({
+                **common,
+                "stage": "stage2",
+                "scenario_id": s.get("id"),
+                "probability": prob,
+                "stage_weight": stage2_weight,
+
+                "cost_time": s.get("cost_time"),
+                "cost_time_base": s.get("cost_time_base"),
+                "cost_time_over": s.get("cost_time_over"),
+                "cost_bypass": s.get("cost_bypass"),
+                "cost_wait": s.get("cost_wait"),
+                "cost_oper": s.get("cost_oper"),
+
+                "repl_cost_freq": s.get("cost_repl_freq"),
+                "repl_cost_path": s.get("cost_repl_path"),
+                "repl_cost": s.get("cost_repl"),
+
+                "objective_unweighted": scen_obj,
+                "objective_contribution": (
+                    stage2_weight * prob * scen_obj
+                    if (
+                            scen_obj is not None
+                            and prob is not None
+                    )
+                    else None
+                ),
+                "sanity_check": None,
+            })
+
+        # ------------------------------------------------------------------
+        # Sanity checks for objective decomposition
+        # ------------------------------------------------------------------
+        stage1_contribution = stage1_row.get("objective_contribution")
+        stage2_exp_contribution = stage2_exp_row.get("objective_contribution")
+
+        scenario_contributions = [
+            row.get("objective_contribution")
+            for row in rows
+            if row.get("stage") == "stage2"
+        ]
+
+        if (
+                stage2_exp_contribution is not None
+                and scenario_contributions
+                and all(value is not None for value in scenario_contributions)
+        ):
+            scenario_contribution_sum = sum(scenario_contributions)
+
+            if not math.isclose(
+                    stage2_exp_contribution,
+                    scenario_contribution_sum,
+                    rel_tol=1e-8,
+                    abs_tol=1e-5,
+            ):
+
+                if stage2_exp_row is not None:
+                    stage2_exp_row["sanity_check"] = "STAGE2_SUM_MISMATCH"
+                print(
+                    f"[WARN] Cost breakdown mismatch in run {run_index}: "
+                    f"stage2_exp contribution = {stage2_exp_contribution}, "
+                    f"sum of scenario contributions = {scenario_contribution_sum}"
+                )
+
+        final_objective = solution.get("objective")
+
+        if (
+                final_objective is not None
+                and stage1_contribution is not None
+                and stage2_exp_contribution is not None
+        ):
+            reconstructed_objective = (
+                    stage1_contribution
+                    + stage2_exp_contribution
+            )
+
+            if not math.isclose(
+                    final_objective,
+                    reconstructed_objective,
+                    rel_tol=1e-8,
+                    abs_tol=1e-5,
+            ):
+                if stage1_row is not None:
+                    stage1_row["sanity_check"] = "OBJECTIVE_MISMATCH"
+                print(
+                    f"[WARN] Objective decomposition mismatch in run {run_index}: "
+                    f"solution objective = {final_objective}, "
+                    f"stage1 + stage2_exp = {reconstructed_objective}"
+                )
+
+        return rows
+
+    def append_cost_breakdown_rows(
+            self,
+            rows: List[Dict[str, Any]]
+    ) -> None:
+        """Append all cost-breakdown rows of one run to cost_breakdown.csv."""
+        if not rows:
+            return
+
+        df = pd.DataFrame(
+            rows,
+            columns=self.cost_breakdown_columns
+        )
+
+        df.to_csv(
+            self.cost_breakdown_path,
+            sep=';',
+            index=False,
+            mode='a',
+            header=False
+        )
 
     # ---------- frequencies & paths ----------
 
