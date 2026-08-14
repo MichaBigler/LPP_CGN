@@ -23,6 +23,7 @@ from solve_cgn_separated import solve_two_stage_separated
 from solve_cgn_integrated import solve_two_stage_integrated
 from solve_cgn_wait_and_see import solve_wait_and_see
 from solve_cgn_eev import solve_eev, solve_two_stage_eev
+from compute_baseline import compute_unavoidable_travel_baseline
 
 from log import RunBatchLogger
 from compute_bounds import compute_bounds
@@ -149,6 +150,15 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
         )
         setattr(domain, "cand_cfg", cand_cfg)
 
+        # compute unavoidable baseline for current network
+        baseline = compute_unavoidable_travel_baseline(domain, model)
+
+        base_row.update({
+            "travel_baseline_raw": baseline["travel_baseline_raw"],
+            "travel_baseline": baseline["travel_baseline"],
+        })
+
+
         # Copy scenario files to run output folder
         run_folder = logger.run_dir(i)
         shutil.copy(domain.props["scenario_infra_file"], os.path.join(run_folder, "scenario_infra_used.csv"))
@@ -171,6 +181,15 @@ def run_one_row(i, cfg_row_dict, data_root, cand_cfg, logger, log_lock):
         else:
             print(f"[WARN] unknown procedure '{proc}', falling back to one_stage")
             m, solution, artifacts = solve_one_stage(domain, model)
+
+        # Sanity check for unavoidable travel baseline
+        if solution.get("objective") is not None:
+            if baseline["travel_baseline"] > solution["objective"] + 1e-5:
+                print(
+                    f"[WARN] Travel baseline exceeds objective in run {i}: "
+                    f"baseline={baseline['travel_baseline']}, "
+                    f"objective={solution['objective']}"
+                )
 
         # Normalize artifact keys so the rest of the script is solver-agnostic
         artifacts = _normalize_artifacts(artifacts)

@@ -25,6 +25,7 @@ from collections import defaultdict
 # ---------- Extra KPI columns that we append to base_log.csv ----------
 BASE_EXTRA_COLS = [
     "status_code", "status", "objective", "runtime_s", "opt_gap",
+    "travel_baseline_raw", "travel_baseline",
     "cost_time", "cost_time_base", "cost_time_over", "cost_bypass", "cost_wait", "cost_oper",
     "obj_stage1", "obj_stage2_exp",
     "repl_cost_freq_exp", "repl_cost_path_exp", "repl_cost_exp",
