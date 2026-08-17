@@ -2,9 +2,9 @@ import os
 import pandas as pd
 
 # What to generate
-GENERATE_SCENARIO_INFRA = True
+GENERATE_SCENARIO_INFRA = False
 GENERATE_CONFIG = True
-EXCLUDE_EDGES = [30, 16, 4, 17, 20, 22, 5]
+EXCLUDE_EDGES = []
 
 # ============================================================================
 # Configuration
@@ -30,7 +30,7 @@ BASE_CONFIG = {
     "travel_time_cost_mult": 1,
     "waiting_time_cost_mult": 2,
     "line_operation_cost_mult": 20,
-    "first_stage_weight": 0.5,
+    "first_stage_weight": 0.75,
     "cost_repl_freq": 50,
     "cost_repl_line": 200,
     "repl_budget": -5,
@@ -96,16 +96,30 @@ def generate_config(edge_giv_path: str, config_output: str):
     normal_edges = edges_df[~edges_df['id'].isin(EXCLUDE_EDGES)]
 
     rows = []
+    # loop over all edges (except for excluded ones)
+    """
     for _, r in normal_edges.iterrows():
         eid = int(r['id'])
-        for procedure in ("two_stage_eev", ): #("integrated", "separated")
-            for waiting in {False}:
+        for procedure in ("integrated", "separated","two_stage_eev", "wait_and_see",): #("integrated", "separated")
+            for first_stage in {0, 0.25, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 0.95, 1}:
                 row = BASE_CONFIG.copy()
                 row["procedure"] = procedure
                 row["scenario_infra_id"] = eid
-                row["scenario_prob_id"] = 1
+                row["scenario_prob_id"] = 2
                 row["bypass_multiplier"] = 10
-                row["waiting_time_frequency"] = waiting
+                row["first_stage_weight"] = first_stage
+                rows.append(row)
+    """
+
+    for edge in {1428, 716, 1025}:
+        for procedure in ("integrated", "separated","two_stage_eev", "wait_and_see",): #("integrated", "separated")
+            for first_stage in {0, 0.25, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 0.95, 1}:
+                row = BASE_CONFIG.copy()
+                row["procedure"] = procedure
+                row["scenario_infra_id"] = edge
+                row["scenario_prob_id"] = 2
+                row["bypass_multiplier"] = 10
+                row["first_stage_weight"] = first_stage
                 rows.append(row)
 
     # Column order must match config.csv header
