@@ -111,9 +111,9 @@ def generate_config(edge_giv_path: str, config_output: str):
                 rows.append(row)
     """
 
-    for edge in {1428, 716, 1025}:
-        for procedure in ("integrated", "separated","two_stage_eev", "wait_and_see",): #("integrated", "separated")
-            for first_stage in {0, 0.25, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 0.95, 1}:
+    for edge in {418, 2030}:
+        for procedure in ("integrated", "separated"): #,"two_stage_eev", "wait_and_see",): #("integrated", "separated")
+            for first_stage in { 0.75,}:
                 row = BASE_CONFIG.copy()
                 row["procedure"] = procedure
                 row["scenario_infra_id"] = edge
