@@ -673,6 +673,15 @@ def build_candidates_all_scenarios_per_line(
                     corr_eps=corr_eps,
                 )
 
+        #only lines with at least one full closure can be rerouted, if only_when_blocked is selected
+        if only_when_blocked:
+            for ell in range(model.L):
+                if _nominal_ok(model, s, ell):
+                    per_line[ell] = [
+                        cand for cand in per_line[ell]
+                        if cand["is_nominal"]
+                    ]
+
         results[int(s)] = per_line
 
     return results
