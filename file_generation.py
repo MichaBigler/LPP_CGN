@@ -26,7 +26,7 @@ BASE_CONFIG = {
     "routing_agg": "TRUE",
     "waiting_time_frequency": "False",
     "gap": 0.00001,
-    "time_limit": 6000,
+    "time_limit": 60000,
     "travel_time_cost_mult": 1,
     "waiting_time_cost_mult": 2,
     "line_operation_cost_mult": 20,
@@ -97,23 +97,23 @@ def generate_config(edge_giv_path: str, config_output: str):
 
     rows = []
     # loop over all edges (except for excluded ones)
-    """
+
     for _, r in normal_edges.iterrows():
         eid = int(r['id'])
         for procedure in ("integrated", "separated","two_stage_eev", "wait_and_see",): #("integrated", "separated")
-            for first_stage in {0, 0.25, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 0.95, 1}:
+            for first_stage in { 0.25, 0.5}:
                 row = BASE_CONFIG.copy()
                 row["procedure"] = procedure
                 row["scenario_infra_id"] = eid
-                row["scenario_prob_id"] = 2
+                row["scenario_prob_id"] = 1
                 row["bypass_multiplier"] = 10
                 row["first_stage_weight"] = first_stage
                 rows.append(row)
-    """
 
-    for edge in {418, 2030}:
-        for procedure in ("integrated", "separated"): #,"two_stage_eev", "wait_and_see",): #("integrated", "separated")
-            for first_stage in { 0.75,}:
+
+    for edge in {2030}:
+        for procedure in ("integrated", "separated","two_stage_eev", "wait_and_see",): #("integrated", "separated")
+            for first_stage in {0, 0.05,0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 0.95, 1}:
                 row = BASE_CONFIG.copy()
                 row["procedure"] = procedure
                 row["scenario_infra_id"] = edge

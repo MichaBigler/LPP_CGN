@@ -287,12 +287,14 @@ class CGN:
         node_line: per CGN node, line id on that node (-1 for ground nodes)
         node_variant: per CGN node, candidate index (-1 for ground nodes)
         arc_line_to: for waiting/transfer arcs: the target line id; -1 otherwise
+    bypass_length_by_arc: storing the bypass arc lengths
     """
     V: int
     A: int
     in_arcs: List[List[int]]
     out_arcs: List[List[int]]
-    ground_of: List[int]
+    ground_in_of: List[int]
+    ground_out_of: List[int]
 
     arc_tail: List[int]
     arc_head: List[int]
@@ -305,3 +307,5 @@ class CGN:
     node_line: List[int]           # per CGN node: line id at node (-1 for ground)
     node_variant: List[int]        # per CGN node: candidate index (-1 for ground)
     arc_line_to: List[int]         # for waiting/transfer: target line (else -1)
+
+    bypass_length_by_arc: Dict[int, float]

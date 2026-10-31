@@ -1,7 +1,8 @@
 # prepare_cgn.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from dataclasses import dataclass
+import heapq
+import math
 from typing import Dict, List, Tuple, Optional
 
 from data_model import CGN
@@ -23,7 +24,8 @@ class _CGNBuilder:
     The ordering of fields in the final CGN dataclass strictly follows data_model.CGN.
     """
 
-    GROUND_VARIANT = -1  # sentinel for ground layer
+    GROUND_IN_VARIANT = -1
+    GROUND_OUT_VARIANT = -2
 
     def __init__(self, model):
         self.m = model
@@ -31,7 +33,8 @@ class _CGNBuilder:
         # --- node bookkeeping ---
         self.nodes: List[Tuple[int, int, int]] = []               # (phys, line, variant)
         self._node_id: Dict[Tuple[int, int, int], int] = {}       # key -> node index
-        self.ground_of: List[int] = [-1] * int(model.N)           # phys node idx -> ground node idx
+        self.ground_in_of: List[int] = [-1] * int(model.N)        # phys node idx -> ground node idx
+        self.ground_out_of: List[int] = [-1] * int(model.N)
 
         # For change/board/alight construction: which (line,variant) touches each phys node
         self.lines_at_node: Dict[int, List[Tuple[int, int]]] = {i: [] for i in range(int(model.N))}
@@ -44,6 +47,7 @@ class _CGNBuilder:
         self.arc_edge: List[int] = []
         self.arc_variant: List[int] = []
         self.arc_line_to: List[int] = []
+        self.bypass_length_by_arc: Dict[int, float] = {}
 
         # Pre-compute tails/heads for infra arcs in *index* space 0..N-1
         nid2idx = model.node_id_to_idx
@@ -66,10 +70,14 @@ class _CGNBuilder:
         return idx
 
     def add_ground_layer(self) -> None:
-        """Create one ground node per physical node."""
+        """Create two ground nodes per physical node."""
         for i in range(int(self.m.N)):
-            idx = self._get_or_create_node(i, -1, self.GROUND_VARIANT)
-            self.ground_of[i] = idx
+            self.ground_in_of[i] = self._get_or_create_node(
+                i, -1, self.GROUND_IN_VARIANT
+            )
+            self.ground_out_of[i] = self._get_or_create_node(
+                i, -1, self.GROUND_OUT_VARIANT
+            )
 
     def touch_line_at_node(self, phys: int, line: int, variant: int) -> int:
         """
@@ -140,18 +148,19 @@ class _CGNBuilder:
     def add_board_alight(self) -> None:
         """
         At each physical node, connect ground <-> (line,variant).
-        - board: ground -> line (arc_line_to = line)
-        - alight: line -> ground
+        - board: ground,in -> line (arc_line_to = line)
+        - alight: line -> ground,out
         """
         for phys in range(int(self.m.N)):
-            v_g = self.ground_of[phys]
+            v_in = self.ground_in_of[phys]
+            v_out = self.ground_out_of[phys]
             lv = self.lines_at_node[phys]
             if not lv:
                 continue
             for (line, var) in lv:
                 v_line = self._get_or_create_node(phys, line, var)
                 # board
-                self.arc_tail.append(v_g)
+                self.arc_tail.append(v_in)
                 self.arc_head.append(v_line)
                 self.arc_kind.append("board")
                 self.arc_line.append(int(line))
@@ -160,32 +169,89 @@ class _CGNBuilder:
                 self.arc_line_to.append(int(line))
                 # alight
                 self.arc_tail.append(v_line)
-                self.arc_head.append(v_g)
+                self.arc_head.append(v_out)
                 self.arc_kind.append("alight")
                 self.arc_line.append(int(line))
                 self.arc_edge.append(-1)
                 self.arc_variant.append(int(var))
                 self.arc_line_to.append(-1)
 
+    def _shortest_bypass_lengths(self, origin: int) -> List[float]:
+        """Calculating length of bypass arcs"""
+        dist = [math.inf] * int(self.m.N)
+        dist[origin] = 0.0
+
+        queue = [(0.0, origin)]
+
+        while queue:
+            current, u = heapq.heappop(queue)
+
+            if current > dist[u]:
+                continue
+
+            for a in self.m.adj_out[u]:
+                v = self._infra_head[int(a)]
+                length = float(self.m.len_a[int(a)])
+
+                if length < 0:
+                    raise ValueError(
+                        "Bypass infrastructure lengths must be nonnegative"
+                    )
+
+                cand = current + length
+
+                if cand < dist[v]:
+                    dist[v] = cand
+                    heapq.heappush(queue, (cand, v))
+
+        return dist
+
     def add_bypass_arcs_if_enabled(self) -> None:
         """
-        Optionally add ground-level bypass arcs for each directed infra arc:
-          ground(u) -> ground(v), kind='bypass', arc_edge=a_idx, line=-1, variant=-1.
-        Enabled if config['bypass_multiplier'] >= 0.0 (same policy as before).
-        """
-        bypass_mult = float(getattr(self.m, "config", {}).get("bypass_multiplier", -1.0))
+                Optionally add ground-level bypass arcs for each directed infra arc:
+                  ground,in(u) -> ground,out(v), kind='bypass', arc_edge=a_idx, line=-1, variant=-1.
+                Enabled if config['bypass_multiplier'] >= 0.0 (same policy as before).
+                """
+        bypass_mult = float(
+            getattr(self.m, "config", {}).get(
+                "bypass_multiplier", -1.0
+            )
+        )
+
         if bypass_mult < 0.0:
             return
-        for a_idx, (u_id, v_id) in enumerate(self.m.idx_to_arc_uv):
-            u = int(self.m.node_id_to_idx[u_id])
-            v = int(self.m.node_id_to_idx[v_id])
-            self.arc_tail.append(self.ground_of[u])
-            self.arc_head.append(self.ground_of[v])
-            self.arc_kind.append("bypass")
-            self.arc_line.append(-1)
-            self.arc_edge.append(int(a_idx))
-            self.arc_variant.append(-1)
-            self.arc_line_to.append(-1)
+
+        for o in range(int(self.m.N)):
+            dests = [
+                d for d in range(int(self.m.N))
+                if float(self.m.D[o, d]) > 0
+            ]
+
+            if not dests:
+                continue
+
+            lengths = self._shortest_bypass_lengths(o)
+
+            for d in dests:
+                if not math.isfinite(lengths[d]):
+                    raise ValueError(
+                        f"No bypass path for OD ({o}, {d})"
+                    )
+
+                a = len(self.arc_tail)
+
+                self.arc_tail.append(self.ground_in_of[o])
+                self.arc_head.append(self.ground_out_of[d])
+
+                self.arc_kind.append("bypass")
+                self.arc_line.append(-1)
+                self.arc_edge.append(-1)
+                self.arc_variant.append(-1)
+                self.arc_line_to.append(-1)
+
+                self.bypass_length_by_arc[a] = lengths[d]
+
+
 
     def to_cgn(self) -> CGN:
         """Finalize adjacency and pack everything into the CGN dataclass."""
@@ -204,9 +270,11 @@ class _CGNBuilder:
         return CGN(
             V, A,
             in_arcs, out_arcs,
-            self.ground_of,
-            self.arc_tail, self.arc_head, self.arc_kind, self.arc_line, self.arc_edge, self.arc_variant,
-            node_line, node_variant, self.arc_line_to
+            self.ground_in_of, self.ground_out_of,
+            self.arc_tail, self.arc_head, self.arc_kind,
+            self.arc_line, self.arc_edge, self.arc_variant,
+            node_line, node_variant, self.arc_line_to,
+            self.bypass_length_by_arc
         )
 
 
@@ -217,7 +285,7 @@ class _CGNBuilder:
 def make_cgn(model) -> CGN:
     """
     Build a CGN from nominal lines only (no candidates).
-    - One ground node per physical node.
+    - Two ground nodes per physical node.
     - For each directed line ℓ: add ride arcs along its nominal infra arcs (variant=0).
     - Add full change arcs between line layers at shared stops.
     - Add board/alight arcs between ground and line layers.

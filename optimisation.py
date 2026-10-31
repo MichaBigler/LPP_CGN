@@ -46,8 +46,7 @@ def cgn_reachable_for_od(cgn: CGN, data, o: int, d: int):
             visited_nodes is a set of CGN node indices,
             allowed_arcs   is a set of CGN arc indices.
     """
-    start = cgn.ground_of[o]
-    goal = cgn.ground_of[d]
+    start = cgn.ground_in_of[o]
 
     seen = [False] * cgn.V
     seen[start] = True
@@ -57,14 +56,7 @@ def cgn_reachable_for_od(cgn: CGN, data, o: int, d: int):
     while Q:
         v = Q.popleft()
         for a in cgn.out_arcs[v]:
-            kind = cgn.arc_kind[a]
             w = cgn.arc_head[a]
-
-            # OD-specific boarding/alighting rules:
-            if kind == "board" and v != start:
-                continue
-            if kind == "alight" and w != goal:
-                continue
 
             allowed_arcs.add(a)
             if not seen[w]:
@@ -104,9 +96,9 @@ def add_flow_conservation_by_origin(m: gp.Model, data, cgn: CGN):
     origins = [o for o, L in dests.items() if L]
 
     # Reachability per origin (board only at origin, alight only at any valid destination)
-    def reach_nodes_and_arcs_for_origin(o: int, dest_set: Iterable[int]):
-        start = cgn.ground_of[o]
-        goal_grounds = {cgn.ground_of[d] for d in dest_set}
+
+    def reach_nodes_and_arcs_for_origin(o: int):
+        start = cgn.ground_in_of[o]
 
         seen = [False] * cgn.V
         seen[start] = True
@@ -116,12 +108,8 @@ def add_flow_conservation_by_origin(m: gp.Model, data, cgn: CGN):
         while Q:
             v = Q.popleft()
             for a in cgn.out_arcs[v]:
-                kind = cgn.arc_kind[a]
                 w = cgn.arc_head[a]
-                if kind == "board" and v != start:
-                    continue
-                if kind == "alight" and w not in goal_grounds:
-                    continue
+
                 allowed.add(a)
                 if not seen[w]:
                     seen[w] = True
@@ -135,7 +123,7 @@ def add_flow_conservation_by_origin(m: gp.Model, data, cgn: CGN):
     nodes_by_o: Dict[int, set] = {}
     arcs_by_o: Dict[int, set] = {}
     for o in origins:
-        nodes, arcs = reach_nodes_and_arcs_for_origin(o, dests[o])
+        nodes, arcs = reach_nodes_and_arcs_for_origin(o)
         nodes_by_o[o] = nodes
         arcs_by_o[o] = arcs
         keys.extend((a, o) for a in arcs)
@@ -146,9 +134,9 @@ def add_flow_conservation_by_origin(m: gp.Model, data, cgn: CGN):
     for o in origins:
         rhs = [0.0] * cgn.V
         supply = float(sum(data.D[o, d] for d in dests[o]))
-        rhs[cgn.ground_of[o]] -= supply
+        rhs[cgn.ground_in_of[o]] -= supply
         for d in dests[o]:
-            rhs[cgn.ground_of[d]] += float(data.D[o, d])
+            rhs[cgn.ground_out_of[d]] += float(data.D[o, d])
 
         nodes = nodes_by_o[o]
         allowed = arcs_by_o[o]
@@ -190,14 +178,19 @@ def add_flow_conservation(m: gp.Model, data, cgn: CGN, K: List[Tuple[int, int]])
         od_allowed[(o, d)] = arcs
         keys.extend((a, (o, d)) for a in arcs)
 
-    x = m.addVars(keys, lb=0.0, name="x")
+    x = {}
+    for a, (o, d) in keys:
+        x[a, (o, d)] = m.addVar(
+            lb=0.0,
+            name=f"x[{a},{o},{d}]"
+        )
 
     # flow conservation per OD on its reachable nodes
     for (o, d) in K:
         rhs = [0.0] * cgn.V
         dem = float(data.D[o, d])
-        rhs[cgn.ground_of[o]] -= dem
-        rhs[cgn.ground_of[d]] += dem
+        rhs[cgn.ground_in_of[o]] -= dem
+        rhs[cgn.ground_out_of[d]] += dem
 
         nodes = od_nodes[(o, d)]
         allowed = od_allowed[(o, d)]
@@ -459,7 +452,7 @@ def build_obj_bypass(m, data, cgn, x, arc_to_keys):
         return gp.LinExpr(0.0)
 
     return gp.quicksum(
-        bypass_mult * float(data.len_a[cgn.arc_edge[a]]) * x[a, key]
+        bypass_mult * float(cgn.bypass_length_by_arc[a]) * x[a, key]
         for a in bypass
         for key in arc_to_keys.get(a, [])
     )

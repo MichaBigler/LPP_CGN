@@ -47,7 +47,7 @@ def _x_to_1d(cgn, x_vars, arc_to_keys):
         subs = loc if isinstance(loc, list) else [loc]
         out = []
         for sub in subs:
-            out.append((a, *sub) if isinstance(sub, tuple) else (a, sub))
+            out.append((a, sub))
         return out
 
     x1d = {}

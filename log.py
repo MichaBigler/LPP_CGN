@@ -739,7 +739,7 @@ class RunBatchLogger:
                     if isinstance(loc, list):
                         s = 0.0
                         for sub in loc:
-                            key = sub if isinstance(sub, tuple) else (a, sub)
+                            key = (a, sub)
                             v = _td_get(x_vars, key)
                             s += _safe_val(v)
                         return s

@@ -158,6 +158,12 @@ def build_expected_value_data(domain: DomainData,model: ModelData,) -> Tuple[Dom
         scen_infra_df=build_expected_value_scenario_infra(domain),
     )
 
+    if hasattr(model, "config"):
+        model_ev.config = model.config
+
+    if hasattr(domain, "cand_cfg"):
+        domain_ev.cand_cfg = domain.cand_cfg
+
     return domain_ev, model_ev
 
 
